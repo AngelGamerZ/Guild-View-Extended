@@ -1,0 +1,11 @@
+dist/
+*.zip
+*.log
+*.bak
+WTF/
+Account/
+SavedVariables/
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
