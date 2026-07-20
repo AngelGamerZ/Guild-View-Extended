@@ -12,6 +12,12 @@ Guild View Extended replaces the basic guild view with an expanded interface for
 - Access guild controls and member invitations when permitted
 - View guild-related information and diagnostic logs in dedicated panels
 
+## Screenshots
+<img width="2385" height="1160" alt="Screenshot 2026-07-20 175229" src="https://github.com/user-attachments/assets/e4c887d0-63af-442d-a37b-bc1d134d5bf7" />
+<img width="1865" height="1162" alt="Screenshot 2026-07-20 175215" src="https://github.com/user-attachments/assets/74308b87-6b3b-4783-b4b0-f68a4217e04c" />
+<img width="2252" height="1149" alt="Screenshot 2026-07-20 175239" src="https://github.com/user-attachments/assets/a225d865-d02c-41c9-a97a-071352523c05" />
+
+
 ## Requirements
 
 - Ascension WoW
