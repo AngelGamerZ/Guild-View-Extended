@@ -2,7 +2,7 @@
 ## Title: Guild-View-Extended
 ## Notes: Erweitertes Gildenfenster mit Filter, Suche und Protokoll | WoW 3.3.5a / Ascension
 ## Author: Claude
-## Version: 1.1.0
+## Version: 1.1.1
 ## SavedVariables: GVEConfig
 
 Guild-View-Extended.lua

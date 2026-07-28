@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 - 2026-07-28
+
+- Added the guild rank to the CSV export as the second `guild_rank` column.
+- Kept each rank paired with the first retained spelling of a deduplicated
+  character name and applied CSV escaping to both values.
+
 ## 1.1.0 - 2026-07-28
 
 - Added a localized, copyable one-column CSV export for all loaded guild members.

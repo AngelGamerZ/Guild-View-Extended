@@ -32,58 +32,79 @@ local function equal(actual, expected, label)
     end
 end
 
-local function build(names)
-    return GVE:BuildCSVFromNames(names)
+local function build(members)
+    return GVE:BuildCSVFromMembers(members)
 end
 
 do
     local csv, count = build({})
-    equal(csv, "character_name", "empty guild")
+    equal(csv, "character_name,guild_rank", "empty guild")
     equal(count, 0, "empty guild count")
 end
 
 do
-    local csv, count = build({"Arthas"})
-    equal(csv, "character_name\nArthas", "one member")
+    local csv, count = build({{name="Arthas", rank="Guild Master"}})
+    equal(csv, "character_name,guild_rank\nArthas,Guild Master", "one member")
     equal(count, 1, "one member count")
 end
 
 do
-    local csv, count = build({"Thrall", "Jaina", "Arthas"})
-    equal(csv, "character_name\nArthas\nJaina\nThrall", "deterministic sample")
+    local csv, count = build({
+        {name="Thrall", rank="Officer"},
+        {name="Jaina", rank="Raider"},
+        {name="Arthas", rank="Guild Master"},
+    })
+    equal(csv, table.concat({
+        "character_name,guild_rank",
+        "Arthas,Guild Master",
+        "Jaina,Raider",
+        "Thrall,Officer",
+    }, "\n"), "deterministic sample")
     equal(count, 3, "sample count")
 end
 
 do
     local csv, count = build({
-        "arthas", "ARTHAS", "Ärger", "ärger", "Thrall-Example Realm",
-        "Jai\r\nna", "O'Neil", "Comma,Name", 'Quote"Name', "", "   ", 42,
+        {name="arthas", rank="Officer, Lead"},
+        {name="ARTHAS", rank="Duplicate rank ignored"},
+        {name="Ärger", rank="Umlaut"},
+        {name="ärger", rank="Duplicate"},
+        {name="Thrall-Example Realm", rank="Officer"},
+        {name="Jai\r\nna", rank="Mem\r\nber"},
+        {name="O'Neil", rank="Raider"},
+        {name="Comma,Name", rank='Raid "Lead"'},
+        {name='Quote"Name', rank="Veteran"},
+        {name="", rank="Invalid"},
+        {name="   ", rank="Invalid"},
+        {name=42, rank="Invalid"},
     })
     equal(csv, table.concat({
-        "character_name",
-        "arthas",
-        '"Comma,Name"',
-        "Jaina",
-        "O'Neil",
-        '"Quote""Name"',
-        "Thrall",
-        "Ärger",
-    }, "\n"), "cleanup, Unicode, dedupe, sort, and escaping")
+        "character_name,guild_rank",
+        'arthas,"Officer, Lead"',
+        '"Comma,Name","Raid ""Lead"""',
+        "Jaina,Member",
+        "O'Neil,Raider",
+        '"Quote""Name",Veteran',
+        "Thrall,Officer",
+        "Ärger,Umlaut",
+    }, "\n"), "cleanup, Unicode, dedupe, rank pairing, sort, and escaping")
     equal(count, 7, "complex count")
 end
 
 do
-    local names = {}
-    for i = 1, 5000 do names[i] = "Member"..i end
-    local csv, count, err = build(names)
+    local members = {}
+    for i = 1, 5000 do
+        members[i] = {name="Member"..i, rank="Rank"..i}
+    end
+    local csv, count, err = build(members)
     equal(count, 5000, "5,000-name limit")
     equal(err, nil, "5,000-name error")
-    if not csv or not csv:find("^character_name\n") then
+    if not csv or not csv:find("^character_name,guild_rank\n") then
         error("5,000-name CSV missing exact header")
     end
 
-    names[5001] = "Member5001"
-    csv, count, err = build(names)
+    members[5001] = {name="Member5001", rank="Overflow"}
+    csv, count, err = build(members)
     equal(csv, nil, "5,001-name CSV")
     equal(count, nil, "5,001-name count")
     if not err or not err:find("5000", 1, true) then
@@ -127,8 +148,9 @@ do
     GVE:BuildCSVWindow()
     equal(UISpecialFrames[#UISpecialFrames], "GVECSVWindow", "Escape frame registration")
 
-    GVE:ShowCSVWindow("character_name\nArthas", 1)
-    equal(GVE.csvWindow.editBox.text, "character_name\nArthas", "dialog CSV text")
+    GVE:ShowCSVWindow("character_name,guild_rank\nArthas,Guild Master", 1)
+    equal(GVE.csvWindow.editBox.text,
+        "character_name,guild_rank\nArthas,Guild Master", "dialog CSV text")
     equal(GVE.csvWindow.countText.text, "1 Charaktere exportiert", "dialog count")
     equal(GVE.csvWindow.shown, true, "dialog shown")
     equal(GVE.csvWindow.editBox.focused, true, "dialog focus")

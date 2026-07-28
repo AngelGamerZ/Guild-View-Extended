@@ -225,16 +225,22 @@ local function EscapeCSVValue(value)
 end
 
 -- Reine Hilfsfunktion, damit die CSV-Regeln ausserhalb des WoW-Clients
--- automatisiert getestet werden koennen.
-function GVE:BuildCSVFromNames(rawNames)
+-- automatisiert getestet werden koennen. Bei Namensduplikaten bleiben
+-- Schreibweise und Gildenrang des ersten Eintrags erhalten.
+function GVE:BuildCSVFromMembers(rawMembers)
     local unique, names = {}, {}
-    for _, rawName in ipairs(rawNames or {}) do
+    for _, rawMember in ipairs(rawMembers or {}) do
+        local rawName = type(rawMember) == "table" and rawMember.name or rawMember
+        local rank = type(rawMember) == "table" and rawMember.rank or ""
+        if type(rank) ~= "string" then rank = "" end
+        rank = rank:gsub("[\r\n]", "")
+
         local name = CleanCharacterName(rawName)
         if name then
             local key = CaseFoldName(name)
             if not unique[key] then
                 unique[key] = true
-                names[#names+1] = {name=name, key=key}
+                names[#names+1] = {name=name, rank=rank, key=key}
                 if #names > CSV_MAX_NAMES then
                     return nil, nil, format(CSV_TEXT.tooMany, CSV_MAX_NAMES)
                 end
@@ -247,9 +253,9 @@ function GVE:BuildCSVFromNames(rawNames)
         return a.key < b.key
     end)
 
-    local lines = {"character_name"}
+    local lines = {"character_name,guild_rank"}
     for _, entry in ipairs(names) do
-        lines[#lines+1] = EscapeCSVValue(entry.name)
+        lines[#lines+1] = EscapeCSVValue(entry.name)..","..EscapeCSVValue(entry.rank)
     end
     return table.concat(lines, "\n"), #names
 end
@@ -464,7 +470,7 @@ function GVE:OnRosterRefreshUpdate(frame, elapsed)
 end
 
 ---------------------------------------------------------------------------
--- CSV-Export: nur Charakternamen, kein automatischer Clipboard-Zugriff.
+-- CSV-Export: Charakternamen + Gildenrang, kein automatischer Clipboard-Zugriff.
 -- Das Fenster ist nicht modal und verwendet dasselbe Dialog-Design wie die
 -- vorhandenen Log-, Detail- und Texteditor-Fenster.
 ---------------------------------------------------------------------------
@@ -560,12 +566,7 @@ function GVE:ShowCSVWindow(csv, count)
 end
 
 function GVE:CreateCSVExport()
-    local rawNames = {}
-    for _, member in ipairs(members) do
-        rawNames[#rawNames+1] = member.name
-    end
-
-    local csv, count, err = self:BuildCSVFromNames(rawNames)
+    local csv, count, err = self:BuildCSVFromMembers(members)
     if not csv then
         Log(err)
         print("|cffff3333[Guild-View-Extended]|r "..err)
