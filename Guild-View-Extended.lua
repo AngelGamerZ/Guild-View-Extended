@@ -14,6 +14,35 @@ _G["GVE"] = GVE
 local LOG_MAX = 200
 GVE.log = {}
 
+local CSV_MAX_NAMES = 5000
+local CSV_TEXT = GetLocale() == "deDE" and {
+    button       = "CSV exportieren",
+    loading      = "Roster wird geladen ...",
+    title        = "CSV-Export",
+    copyHint     = "Drücke Strg+C, um die CSV zu kopieren.",
+    count        = "%d Charaktere exportiert",
+    close        = "Schließen",
+    tooMany      = "CSV-Export abgebrochen: Mehr als %d eindeutige Charaktere gefunden.",
+} or {
+    button       = "Export CSV",
+    loading      = "Loading roster ...",
+    title        = "CSV Export",
+    copyHint     = "Press Ctrl+C to copy the CSV.",
+    count        = "%d characters exported",
+    close        = CLOSE or "Close",
+    tooMany      = "CSV export cancelled: More than %d unique characters were found.",
+}
+
+local ACTION_TEXT = GetLocale() == "deDE" and {
+    inviteGroup  = "Invite GRP",
+    leaveGuild   = "Gilde verlassen",
+    leaveConfirm = "Möchtest du die Gilde wirklich verlassen?",
+} or {
+    inviteGroup  = "Invite GRP",
+    leaveGuild   = "Leave Guild",
+    leaveConfirm = "Are you sure you want to leave the guild?",
+}
+
 local function Log(msg)
     local t = GVE.log
     t[#t+1] = date("%H:%M:%S").."  "..tostring(msg)
@@ -90,6 +119,7 @@ local FILTER_H = 30
 local COL_H    = 18
 local ROW_H    = 16
 local BOTTOM_H = 130
+local ROSTER_REFRESH_SECONDS = 5
 
 local ROSTER_W = W - LOG_W - PAD * 3
 local ROSTER_H = H - PAD - TITLE_H - 6 - FILTER_H - 4 - COL_H - 2 - BOTTOM_H - PAD - 10
@@ -140,6 +170,89 @@ local searchStr = ""
 local filterClasses = {}
 local filterRanks   = {}
 local filterOnline  = false
+
+-- Lua 5.1 lower() behandelt UTF-8 je nach Client nur eingeschraenkt.
+-- Die in WoW-Namen ueblichen lateinischen Grossbuchstaben werden deshalb
+-- vor dem ASCII-lower() explizit gefaltet. Der Originalname bleibt unveraendert.
+local UTF8_CASE_PAIRS = {
+    {"À","à"}, {"Á","á"}, {"Â","â"}, {"Ã","ã"}, {"Ä","ä"}, {"Å","å"},
+    {"Æ","æ"}, {"Ç","ç"}, {"È","è"}, {"É","é"}, {"Ê","ê"}, {"Ë","ë"},
+    {"Ì","ì"}, {"Í","í"}, {"Î","î"}, {"Ï","ï"}, {"Ð","ð"}, {"Ñ","ñ"},
+    {"Ò","ò"}, {"Ó","ó"}, {"Ô","ô"}, {"Õ","õ"}, {"Ö","ö"}, {"Ø","ø"},
+    {"Ù","ù"}, {"Ú","ú"}, {"Û","û"}, {"Ü","ü"}, {"Ý","ý"}, {"Þ","þ"},
+    {"Ā","ā"}, {"Ă","ă"}, {"Ą","ą"}, {"Ć","ć"}, {"Ĉ","ĉ"}, {"Ċ","ċ"},
+    {"Č","č"}, {"Ď","ď"}, {"Đ","đ"}, {"Ē","ē"}, {"Ĕ","ĕ"}, {"Ė","ė"},
+    {"Ę","ę"}, {"Ě","ě"}, {"Ĝ","ĝ"}, {"Ğ","ğ"}, {"Ġ","ġ"}, {"Ģ","ģ"},
+    {"Ĥ","ĥ"}, {"Ħ","ħ"}, {"Ĩ","ĩ"}, {"Ī","ī"}, {"Ĭ","ĭ"}, {"Į","į"},
+    {"İ","i"}, {"Ĳ","ĳ"}, {"Ĵ","ĵ"}, {"Ķ","ķ"}, {"Ĺ","ĺ"}, {"Ļ","ļ"},
+    {"Ľ","ľ"}, {"Ŀ","ŀ"}, {"Ł","ł"}, {"Ń","ń"}, {"Ņ","ņ"}, {"Ň","ň"},
+    {"Ŋ","ŋ"}, {"Ō","ō"}, {"Ŏ","ŏ"}, {"Ő","ő"}, {"Œ","œ"}, {"Ŕ","ŕ"},
+    {"Ŗ","ŗ"}, {"Ř","ř"}, {"Ś","ś"}, {"Ŝ","ŝ"}, {"Ş","ş"}, {"Š","š"},
+    {"Ţ","ţ"}, {"Ť","ť"}, {"Ŧ","ŧ"}, {"Ũ","ũ"}, {"Ū","ū"}, {"Ŭ","ŭ"},
+    {"Ů","ů"}, {"Ű","ű"}, {"Ų","ų"}, {"Ŵ","ŵ"}, {"Ŷ","ŷ"}, {"Ÿ","ÿ"},
+    {"Ź","ź"}, {"Ż","ż"}, {"Ž","ž"}, {"ẞ","ß"},
+}
+
+local function CaseFoldName(value)
+    local folded = value
+    for _, pair in ipairs(UTF8_CASE_PAIRS) do
+        folded = folded:gsub(pair[1], pair[2])
+    end
+    return folded:lower()
+end
+
+local function CleanCharacterName(value)
+    if type(value) ~= "string" then return nil end
+    local name = value:gsub("[\r\n]", "")
+    name = name:gsub("%-.*$", "")
+    name = name:gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" or name:find("%c") then return nil end
+    return name
+end
+
+local function IsPlayerCharacterName(value)
+    local playerName = UnitName("player")
+    local name = CleanCharacterName(value)
+    if not playerName or not name then return false end
+    return CaseFoldName(name) == CaseFoldName(playerName)
+end
+
+local function EscapeCSVValue(value)
+    if value:find('[,"\r\n]') then
+        return '"'..value:gsub('"', '""')..'"'
+    end
+    return value
+end
+
+-- Reine Hilfsfunktion, damit die CSV-Regeln ausserhalb des WoW-Clients
+-- automatisiert getestet werden koennen.
+function GVE:BuildCSVFromNames(rawNames)
+    local unique, names = {}, {}
+    for _, rawName in ipairs(rawNames or {}) do
+        local name = CleanCharacterName(rawName)
+        if name then
+            local key = CaseFoldName(name)
+            if not unique[key] then
+                unique[key] = true
+                names[#names+1] = {name=name, key=key}
+                if #names > CSV_MAX_NAMES then
+                    return nil, nil, format(CSV_TEXT.tooMany, CSV_MAX_NAMES)
+                end
+            end
+        end
+    end
+
+    table.sort(names, function(a, b)
+        if a.key == b.key then return a.name < b.name end
+        return a.key < b.key
+    end)
+
+    local lines = {"character_name"}
+    for _, entry in ipairs(names) do
+        lines[#lines+1] = EscapeCSVValue(entry.name)
+    end
+    return table.concat(lines, "\n"), #names
+end
 
 -- "Zuletzt Online" ist nur fuer Gildenmeister und Offiziere gedacht;
 -- als Offizier-Merkmal dient das Recht, Offiziersnotizen zu sehen.
@@ -305,6 +418,16 @@ function GVE:Build()
             GuildControlPopupFrame:Hide()
         end
     end)
+    f:SetScript("OnShow", function(self)
+        self.rosterRefreshElapsed = 0
+    end)
+    -- 3.3.5a sendet fremde Notiz-/Roster-Aenderungen nicht in jeder
+    -- Situation ungefragt an den Client. Solange GuildView sichtbar ist,
+    -- fragen wir deshalb moderat nach und lassen GUILD_ROSTER_UPDATE die
+    -- bestehenden Listen und ein offenes Detailfenster aktualisieren.
+    f:SetScript("OnUpdate", function(self, elapsed)
+        GVE:OnRosterRefreshUpdate(self, elapsed)
+    end)
 
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", f, "TOP", 0, -10)
@@ -329,6 +452,156 @@ function GVE:Build()
     self:BuildRosterRows()
     self:BuildBottomPanels()
     self:BuildLogPanel()
+end
+
+function GVE:OnRosterRefreshUpdate(frame, elapsed)
+    frame.rosterRefreshElapsed = (frame.rosterRefreshElapsed or 0) + elapsed
+    if frame.rosterRefreshElapsed >= ROSTER_REFRESH_SECONDS then
+        frame.rosterRefreshElapsed = 0
+        SetGuildRosterShowOffline(true)
+        GuildRoster()
+    end
+end
+
+---------------------------------------------------------------------------
+-- CSV-Export: nur Charakternamen, kein automatischer Clipboard-Zugriff.
+-- Das Fenster ist nicht modal und verwendet dasselbe Dialog-Design wie die
+-- vorhandenen Log-, Detail- und Texteditor-Fenster.
+---------------------------------------------------------------------------
+StaticPopupDialogs["GVE_CSV_ERROR"] = {
+    text = "%s",
+    button1 = OKAY or "OK",
+    timeout = 0, whileDead = 1, hideOnEscape = 1,
+}
+
+StaticPopupDialogs["GVE_LEAVE_GUILD"] = {
+    text = ACTION_TEXT.leaveConfirm,
+    button1 = YES or "Yes",
+    button2 = CANCEL or "Cancel",
+    OnAccept = function()
+        GuildLeave()
+        Log("Gilde verlassen angefordert")
+    end,
+    showAlert = 1,
+    timeout = 0, whileDead = 1, hideOnEscape = 1,
+}
+
+function GVE:BuildCSVWindow()
+    local w = CreateFrame("Frame", "GVECSVWindow", UIParent)
+    w:SetWidth(600); w:SetHeight(430)
+    w:SetPoint("CENTER")
+    w:SetMovable(true); w:EnableMouse(true)
+    w:RegisterForDrag("LeftButton")
+    w:SetScript("OnDragStart", w.StartMoving)
+    w:SetScript("OnDragStop",  w.StopMovingOrSizing)
+    w:SetFrameStrata("DIALOG")
+    w:SetBackdrop(MAIN_BD)
+    w:SetBackdropColor(0, 0, 0, 0.97)
+    w:Hide()
+    tinsert(UISpecialFrames, "GVECSVWindow")
+    self.csvWindow = w
+
+    local title = w:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", w, "TOP", 0, -12)
+    title:SetText("|cff33aaff"..CSV_TEXT.title.."|r")
+
+    local xb = CreateFrame("Button", nil, w, "UIPanelCloseButton")
+    xb:SetPoint("TOPRIGHT", w, "TOPRIGHT", 0, 0)
+
+    local hint = w:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    hint:SetPoint("TOPLEFT", w, "TOPLEFT", 16, -36)
+    hint:SetText(CSV_TEXT.copyHint)
+
+    w.countText = w:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    w.countText:SetPoint("TOPRIGHT", w, "TOPRIGHT", -18, -38)
+    w.countText:SetTextColor(0.65, 0.65, 0.65)
+
+    local bg = CreateFrame("Frame", nil, w)
+    bg:SetPoint("TOPLEFT", w, "TOPLEFT", 14, -58)
+    bg:SetPoint("BOTTOMRIGHT", w, "BOTTOMRIGHT", -14, 48)
+    bg:SetBackdrop(PANEL_BD)
+    bg:SetBackdropColor(0.02, 0.02, 0.04, 0.95)
+
+    local sf = CreateFrame("ScrollFrame", "GVECSVScroll", bg, "UIPanelScrollFrameTemplate")
+    sf:SetPoint("TOPLEFT", bg, "TOPLEFT", 8, -7)
+    sf:SetPoint("BOTTOMRIGHT", bg, "BOTTOMRIGHT", -28, 7)
+    w.scroll = sf
+
+    local eb = CreateFrame("EditBox", nil, sf)
+    eb:SetMultiLine(true)
+    eb:SetFontObject(ChatFontNormal)
+    eb:SetWidth(520)
+    eb:SetAutoFocus(false)
+    eb:SetMaxLetters(0)
+    eb:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+        w:Hide()
+    end)
+    sf:SetScrollChild(eb)
+    w.editBox = eb
+    w:SetScript("OnHide", function() eb:ClearFocus() end)
+
+    local close = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
+    close:SetWidth(110); close:SetHeight(22)
+    close:SetPoint("BOTTOMRIGHT", w, "BOTTOMRIGHT", -16, 16)
+    close:SetText(CSV_TEXT.close)
+    close:SetScript("OnClick", function() w:Hide() end)
+end
+
+function GVE:ShowCSVWindow(csv, count)
+    if not self.csvWindow then self:BuildCSVWindow() end
+    local w = self.csvWindow
+    w.editBox:SetText(csv)
+    w.countText:SetText(format(CSV_TEXT.count, count))
+    w.scroll:SetVerticalScroll(0)
+    w:Show()
+    w.editBox:SetFocus()
+    w.editBox:HighlightText()
+end
+
+function GVE:CreateCSVExport()
+    local rawNames = {}
+    for _, member in ipairs(members) do
+        rawNames[#rawNames+1] = member.name
+    end
+
+    local csv, count, err = self:BuildCSVFromNames(rawNames)
+    if not csv then
+        Log(err)
+        print("|cffff3333[Guild-View-Extended]|r "..err)
+        StaticPopup_Show("GVE_CSV_ERROR", err)
+        return
+    end
+
+    Log("CSV-Export erstellt: "..count.." Charaktere")
+    self:ShowCSVWindow(csv, count)
+end
+
+function GVE:UpdateCSVButton()
+    if not self.csvButton then return end
+    if self.csvPending then
+        self.csvButton:SetText(CSV_TEXT.loading)
+        self.csvButton:Disable()
+    else
+        self.csvButton:SetText(CSV_TEXT.button)
+        self.csvButton:Enable()
+    end
+end
+
+function GVE:RequestCSVExport()
+    if self.rosterLoaded then
+        self:CreateCSVExport()
+        return
+    end
+    if self.csvPending then return end
+
+    self.csvPending = true
+    self:UpdateCSVButton()
+    Log("CSV-Export wartet auf GUILD_ROSTER_UPDATE")
+
+    -- 3.3.5a-API: Offline-Mitglieder vor der asynchronen Abfrage einschalten.
+    SetGuildRosterShowOffline(true)
+    GuildRoster()
 end
 
 ---------------------------------------------------------------------------
@@ -897,6 +1170,17 @@ end
 ---------------------------------------------------------------------------
 -- Roster-Zeilen
 ---------------------------------------------------------------------------
+function GVE:AddLeaveGuildMenuItem()
+    local info = UIDropDownMenu_CreateInfo()
+    info.text = ACTION_TEXT.leaveGuild
+    info.notCheckable = true
+    info.func = function()
+        CloseDropDownMenus()
+        StaticPopup_Show("GVE_LEAVE_GUILD")
+    end
+    UIDropDownMenu_AddButton(info, 1)
+end
+
 function GVE:BuildRosterRows()
     local f      = self.f
     local yStart = -(PAD + TITLE_H + 2 + FILTER_H + 4 + COL_H + 1)
@@ -928,6 +1212,9 @@ function GVE:BuildRosterRows()
             if not m then return end
             if button == "RightButton" then
                 FriendsFrame_ShowDropdown(m.name, m.online)
+                if IsPlayerCharacterName(m.name) then
+                    GVE:AddLeaveGuildMenuItem()
+                end
             elseif IsShiftKeyDown() and ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow() then
                 -- Shift-Klick: Name in offene Chatzeile einfuegen
                 ChatEdit_InsertLink(m.name)
@@ -1096,7 +1383,7 @@ end
 
 function GVE:BuildMemberDetail()
     local d = CreateFrame("Frame", "GVEMemberDetail", self.f)
-    d:SetWidth(210); d:SetHeight(310)
+    d:SetWidth(210); d:SetHeight(338)
     d:SetPoint("TOPLEFT", self.f, "TOPRIGHT", 2, -60)
     d:SetFrameStrata("DIALOG")
     d:EnableMouse(true)
@@ -1189,9 +1476,20 @@ function GVE:BuildMemberDetail()
     end)
     d.officerBox.bg:SetPoint("TOPLEFT", ol, "BOTTOMLEFT", 0, -3)
 
+    d.invite = CreateFrame("Button", nil, d, "UIPanelButtonTemplate")
+    d.invite:SetWidth(180); d.invite:SetHeight(20)
+    d.invite:SetPoint("TOPLEFT", d.officerBox.bg, "BOTTOMLEFT", 0, -12)
+    d.invite:SetText(ACTION_TEXT.inviteGroup)
+    d.invite:SetScript("OnClick", function()
+        if d.member and not IsPlayerCharacterName(d.member.name) then
+            InviteUnit(d.member.name)
+            Log("Gruppeneinladung gesendet an "..d.member.name)
+        end
+    end)
+
     d.remove = CreateFrame("Button", nil, d, "UIPanelButtonTemplate")
     d.remove:SetWidth(180); d.remove:SetHeight(20)
-    d.remove:SetPoint("TOPLEFT", d.officerBox.bg, "BOTTOMLEFT", 0, -12)
+    d.remove:SetPoint("TOPLEFT", d.invite, "BOTTOMLEFT", 0, -6)
     d.remove:SetText("|cffff3333"..(REMOVE or "Remove").."|r")
     d.remove:SetScript("OnClick", function()
         if d.member then
@@ -1229,6 +1527,7 @@ function GVE:ShowMemberDetail(m)
         UIDropDownMenu_DisableDropDown(d.rankDD)
     end
     if CanGuildRemove() then d.remove:Enable() else d.remove:Disable() end
+    if IsPlayerCharacterName(m.name) then d.invite:Disable() else d.invite:Enable() end
 
     d.noteBox:SetText(m.note or "")
     if CanEditPublicNote() then d.noteBox:EnableMouse(true); d.noteBox:SetTextColor(1,1,1)
@@ -1482,12 +1781,21 @@ function GVE:BuildLogPanel()
     lt:SetPoint("TOP", lf, "TOP", 0, -5)
     lt:SetText("|cff33aaff>> |r"..(GUILD_EVENT_LOG_TITLE or "Guild Log"))
 
+    local csvButton = CreateFrame("Button", nil, lf, "UIPanelButtonTemplate")
+    csvButton:SetWidth(150); csvButton:SetHeight(20)
+    csvButton:SetPoint("TOP", lf, "TOP", 0, -24)
+    csvButton:SetText(CSV_TEXT.button)
+    csvButton:SetScript("OnClick", function()
+        Guard("CSVExportRequest", function() GVE:RequestCSVExport() end)
+    end)
+    self.csvButton = csvButton
+
     local lsf = CreateFrame("ScrollFrame", "GVELogScroll", lf, "FauxScrollFrameTemplate")
-    lsf:SetPoint("TOPLEFT",     lf, "TOPLEFT",     4, -24)
+    lsf:SetPoint("TOPLEFT",     lf, "TOPLEFT",     4, -50)
     lsf:SetPoint("BOTTOMRIGHT", lf, "BOTTOMRIGHT", -4, 4)
     self.lsf = lsf
 
-    local maxLogRows = math.floor((logH - 30) / LOG_ROW_H)
+    local maxLogRows = math.floor((logH - 56) / LOG_ROW_H)
     self.logRows = {}
     for i = 1, maxLogRows do
         local row = lsf:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1638,6 +1946,7 @@ evtFrame:SetScript("OnEvent", function(self, event)
 
             -- Offline-Mitglieder in den Roster-Daten einschliessen, sonst
             -- liefert GetGuildRosterInfo nur Online-Spieler (3.3.5a-Verhalten).
+            GVE.rosterLoaded = false
             SetGuildRosterShowOffline(true)
             GuildRoster()  -- Daten vorhalten fuer das erste Oeffnen
             Log("Init: Roster angefordert")
@@ -1650,13 +1959,21 @@ evtFrame:SetScript("OnEvent", function(self, event)
         -- Feuert beim Laden schon VOR PLAYER_LOGIN -> erst reagieren,
         -- wenn das Fenster gebaut ist (sonst nil-Fehler im ScrollFrame)
         if not GVE.f then return end
-        Guard("RosterUpdate", function()
+        local rosterOK = Guard("RosterUpdate", function()
             GVE:LoadRoster()
             GVE:RefreshBottomPanels()
             GVE:StepRank()          -- laufenden Rangwechsel fortsetzen
             GVE:RefreshMemberDetail()
             GVE:RefreshLastOnlineWindow()
         end)
+        if rosterOK then
+            GVE.rosterLoaded = true
+            if GVE.csvPending then
+                GVE.csvPending = nil
+                GVE:UpdateCSVButton()
+                Guard("CSVExport", function() GVE:CreateCSVExport() end)
+            end
+        end
 
     elseif event == "GUILD_EVENT_LOG_UPDATE" then
         if GVE.f and GVE.f:IsShown() then
