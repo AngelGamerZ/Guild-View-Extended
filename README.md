@@ -8,7 +8,7 @@ Guild View Extended replaces the basic guild view with an expanded interface for
 - Filter members by class, rank, and online status
 - Sort the roster using extended columns
 - Review last-online information with configurable time filters
-- Export all guild character names as a copyable one-column CSV
+- Export all guild character names and guild ranks as a copyable two-column CSV
 - Invite a selected guild member directly from the member detail window
 - Leave the guild from the player's own roster context menu with confirmation
 - Refresh member and guild-note changes automatically while the window is open
@@ -64,21 +64,24 @@ Guild View Extended replaces the basic guild view with an expanded interface for
 4. In the export window, press `Ctrl+C`; the complete text is already selected.
 5. Open the Raid Helper web interface, select its character-name CSV import,
    paste the copied text (or save it as a UTF-8 `.csv` file), and start the
-   import. Map the `character_name` header if the interface asks for a column.
+   import. Map the `character_name` and `guild_rank` headers if the interface
+   asks for column assignments.
 
-The export contains exactly one column named `character_name`. It does not
-contain rank, level, class, zone, online state, public notes, or officer notes.
-Names are exported without realm suffixes, deduplicated case-insensitively, and
-sorted deterministically. No HTTP request or automatic clipboard access is
-used, and no export data is stored in `GVEConfig`.
+The export contains exactly two columns named `character_name` and
+`guild_rank`. It does not contain level, class, zone, online state, public
+notes, or officer notes. Names are exported without realm suffixes,
+deduplicated case-insensitively, and sorted deterministically. The guild rank
+from the first retained name entry stays paired with that character. Both
+columns use standard CSV escaping. No HTTP request or automatic clipboard
+access is used, and no export data is stored in `GVEConfig`.
 
 Example:
 
 ```csv
-character_name
-Arthas
-Jaina
-Thrall
+character_name,guild_rank
+Arthas,Guild Master
+Jaina,Raider
+Thrall,Officer
 ```
 
 ## Backup and rollback
@@ -98,6 +101,10 @@ An additional snapshot from immediately before the member-action and live
 refresh changes is stored as
 `Guild-View-Extended-pre-guild-actions-20260728-145630.zip` with SHA-256
 `91120A28F5D3DF4F76134487156286392374E8E5D7C05EEC81AE860EBB467843`.
+
+The published 1.1.0 state immediately before the two-column CSV correction is
+stored as `Guild-View-Extended-pre-1.1.1-20260728-151729.zip` with SHA-256
+`01C5EA4DB3FDA3D32D1EE287502E4879EF692C45175CFF03EC3F095301DF7502`.
 
 ## Development tests
 
