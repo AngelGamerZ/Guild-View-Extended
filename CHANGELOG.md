@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.2 - 2026-08-28
+
+- Enlarged and reorganized the Last Online window for better readability.
+- Added a live, case-insensitive member-name search that combines with the
+  existing offline-duration filter.
+- Added a rank column heading, clearer result counts, deterministic tie
+  sorting, scroll reset after filtering, and explicit empty-result messages.
+- Made Escape close the window from the focused search field and request fresh
+  roster data whenever the window opens.
+- Widened the local test build further, placed the search in a clearly bordered
+  panel, forced long ranks to remain on one line, and added alternating row
+  backgrounds plus subtle separators between members.
+
 ## 1.1.1 - 2026-07-28
 
 - Added the guild rank to the CSV export as the second `guild_rank` column.

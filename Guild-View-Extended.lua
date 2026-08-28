@@ -420,6 +420,7 @@ function GVE:Build()
     -- ESC ruft f:Hide() direkt auf (nicht GVE:Close) -> Aufraeumen hier
     f:SetScript("OnHide", function()
         if GVE.filterPanel then GVE.filterPanel:Hide() end
+        if GVE.lastOnlineWin then GVE.lastOnlineWin:Hide() end
         if GuildControlPopupFrame and GuildControlPopupFrame:IsShown() then
             GuildControlPopupFrame:Hide()
         end
@@ -715,14 +716,70 @@ end
 -- nach eigener Zeitspanne filterbar (X Tage / Wochen / Monate offline).
 -- Im Hauptfenster wird "zuletzt online" bewusst NICHT angezeigt.
 ---------------------------------------------------------------------------
-local LO_ROWS  = 18
-local LO_ROW_H = 16
+local LO_ROWS  = 20
+local LO_ROW_H = 20
 local loSortAsc     = false   -- Standard: laengste Offline-Zeit zuerst
 local loFilterHours = nil
+local loSearchStr   = ""
+
+local LO_TEXT = GetLocale() == "deDE" and {
+    searchLabel = "Spieler suchen:",
+    clearSearch = "Löschen",
+    offlineFor  = "Offline seit mindestens:",
+    days        = "Tage",
+    weeks       = "Wochen",
+    months      = "Monate",
+    name        = "Name",
+    rank        = "Rang",
+    empty       = "Keine Gildenmitglieder verfügbar.",
+    noResults   = "Keine Treffer für aktuelle Suche und Filter.",
+    count       = "%d von %d Mitgliedern",
+} or {
+    searchLabel = "Search player:",
+    clearSearch = "Clear",
+    offlineFor  = "Offline for at least:",
+    days        = "Days",
+    weeks       = "Weeks",
+    months      = "Months",
+    name        = "Name",
+    rank        = "Rank",
+    empty       = "No guild members available.",
+    noResults   = "No matches for the current search and filters.",
+    count       = "%d of %d members",
+}
+
+function GVE:BuildLastOnlineList(sourceMembers, searchText, filterHours, ascending)
+    local list = {}
+    local search = CaseFoldName(searchText or "")
+    for _, m in ipairs(sourceMembers or {}) do
+        local matchesSearch = search == ""
+            or CaseFoldName(m.name or ""):find(search, 1, true) ~= nil
+        local matchesTime = not filterHours
+            or (m.lastOnline or 0) >= filterHours
+        if matchesSearch and matchesTime then list[#list+1] = m end
+    end
+    table.sort(list, function(a, b)
+        local va, vb = a.lastOnline or 0, b.lastOnline or 0
+        if va == vb then
+            local an, bn = CaseFoldName(a.name or ""), CaseFoldName(b.name or "")
+            if an == bn then return (a.name or "") < (b.name or "") end
+            return an < bn
+        end
+        if ascending then return va < vb else return va > vb end
+    end)
+    return list
+end
+
+function GVE:ResetLastOnlineScroll()
+    local w = self.lastOnlineWin
+    if not (w and w.scroll) then return end
+    w.scroll:SetVerticalScroll(0)
+    FauxScrollFrame_SetOffset(w.scroll, 0)
+end
 
 function GVE:BuildLastOnlineWindow()
     local w = CreateFrame("Frame", "GVELastOnlineWindow", UIParent)
-    w:SetWidth(400); w:SetHeight(430)
+    w:SetWidth(720); w:SetHeight(600)
     w:SetPoint("CENTER")
     w:SetMovable(true); w:EnableMouse(true)
     w:RegisterForDrag("LeftButton")
@@ -742,11 +799,51 @@ function GVE:BuildLastOnlineWindow()
     local xb = CreateFrame("Button", nil, w, "UIPanelCloseButton")
     xb:SetPoint("TOPRIGHT", w, "TOPRIGHT", 0, 0)
 
-    -- Filterzeile: Offline seit mindestens [n] [Einheit]  [Reset]
+    -- Eigene, deutlich abgesetzte Namenssuche, unabhaengig von der Suche
+    -- im Hauptfenster.
+    local searchPanel = CreateFrame("Frame", nil, w)
+    searchPanel:SetPoint("TOPLEFT", w, "TOPLEFT", 16, -34)
+    searchPanel:SetPoint("TOPRIGHT", w, "TOPRIGHT", -16, -34)
+    searchPanel:SetHeight(36)
+    searchPanel:SetBackdrop(PANEL_BD)
+    searchPanel:SetBackdropColor(0.04, 0.08, 0.14, 0.92)
+
+    local sl = searchPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    sl:SetPoint("LEFT", searchPanel, "LEFT", 12, 0)
+    sl:SetText(LO_TEXT.searchLabel)
+    sl:SetTextColor(1, 0.82, 0)
+
+    local search = CreateFrame("EditBox", "GVELastOnlineSearch", searchPanel, "InputBoxTemplate")
+    search:SetWidth(390); search:SetHeight(22)
+    search:SetPoint("LEFT", sl, "RIGHT", 10, 0)
+    search:SetAutoFocus(false)
+    search:SetMaxLetters(40)
+    search:SetScript("OnTextChanged", function(self)
+        loSearchStr = self:GetText() or ""
+        GVE:ResetLastOnlineScroll()
+        GVE:RefreshLastOnlineWindow()
+    end)
+    search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    search:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+        w:Hide()
+    end)
+    w.search = search
+
+    local clearSearch = CreateFrame("Button", nil, searchPanel, "UIPanelButtonTemplate")
+    clearSearch:SetWidth(82); clearSearch:SetHeight(20)
+    clearSearch:SetPoint("LEFT", search, "RIGHT", 8, 0)
+    clearSearch:SetText(LO_TEXT.clearSearch)
+    clearSearch:SetScript("OnClick", function()
+        search:SetText("")
+        search:ClearFocus()
+    end)
+
+    -- Zeitfilter in einer eigenen Zeile.
     local fl = w:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    fl:SetPoint("TOPLEFT", w, "TOPLEFT", 16, -34)
-    fl:SetText("Offline seit mind.:")
-    fl:SetTextColor(0.6, 0.6, 0.6)
+    fl:SetPoint("TOPLEFT", w, "TOPLEFT", 20, -84)
+    fl:SetText(LO_TEXT.offlineFor)
+    fl:SetTextColor(0.75, 0.75, 0.75)
 
     local amount = CreateFrame("EditBox", "GVELastOnlineAmount", w, "InputBoxTemplate")
     amount:SetWidth(36); amount:SetHeight(20)
@@ -760,6 +857,7 @@ function GVE:BuildLastOnlineWindow()
     local function ApplyTimeFilter()
         local n = tonumber(amount:GetText())
         loFilterHours = (n and n > 0) and (n * w.unitHours) or nil
+        GVE:ResetLastOnlineScroll()
         GVE:RefreshLastOnlineWindow()
     end
     amount:SetScript("OnEnterPressed", function(self)
@@ -769,9 +867,9 @@ function GVE:BuildLastOnlineWindow()
     amount:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 
     local UNITS = {
-        {label="Tage",   hours=24},
-        {label="Wochen", hours=168},
-        {label="Monate", hours=720},
+        {label=LO_TEXT.days,   hours=24},
+        {label=LO_TEXT.weeks,  hours=168},
+        {label=LO_TEXT.months, hours=720},
     }
     local unitDD = CreateFrame("Frame", "GVELastOnlineUnitDD", w, "UIDropDownMenuTemplate")
     unitDD:SetPoint("LEFT", amount, "RIGHT", -12, -2)
@@ -782,17 +880,18 @@ function GVE:BuildLastOnlineWindow()
             info.text    = u.label
             info.value   = u.hours
             info.checked = (w.unitHours == u.hours)
-            info.func    = function(btn)
+            info.arg1    = u.label
+            info.func    = function(btn, label)
                 w.unitHours = btn.value
                 UIDropDownMenu_SetSelectedValue(unitDD, btn.value)
-                UIDropDownMenu_SetText(unitDD, u.label)
+                UIDropDownMenu_SetText(unitDD, label)
                 ApplyTimeFilter()
             end
             UIDropDownMenu_AddButton(info, level)
         end
     end)
     UIDropDownMenu_SetSelectedValue(unitDD, 24)
-    UIDropDownMenu_SetText(unitDD, "Tage")
+    UIDropDownMenu_SetText(unitDD, LO_TEXT.days)
 
     local clr = CreateFrame("Button", nil, w, "UIPanelButtonTemplate")
     clr:SetWidth(60); clr:SetHeight(20)
@@ -801,18 +900,24 @@ function GVE:BuildLastOnlineWindow()
     clr:SetScript("OnClick", function()
         amount:SetText("")
         loFilterHours = nil
+        GVE:ResetLastOnlineScroll()
         GVE:RefreshLastOnlineWindow()
     end)
 
     -- Spaltenkoepfe: Klick auf "Zuletzt Online" wechselt die Richtung
     local nameHdr = w:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    nameHdr:SetPoint("TOPLEFT", w, "TOPLEFT", 18, -64)
-    nameHdr:SetText("Name")
+    nameHdr:SetPoint("TOPLEFT", w, "TOPLEFT", 20, -126)
+    nameHdr:SetText(LO_TEXT.name)
     nameHdr:SetTextColor(1, 0.82, 0)
 
+    local rankHdr = w:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    rankHdr:SetPoint("TOPLEFT", w, "TOPLEFT", 265, -126)
+    rankHdr:SetText(LO_TEXT.rank)
+    rankHdr:SetTextColor(1, 0.82, 0)
+
     local timeHdr = CreateFrame("Button", nil, w)
-    timeHdr:SetWidth(140); timeHdr:SetHeight(14)
-    timeHdr:SetPoint("TOPRIGHT", w, "TOPRIGHT", -40, -64)
+    timeHdr:SetWidth(170); timeHdr:SetHeight(16)
+    timeHdr:SetPoint("TOPRIGHT", w, "TOPRIGHT", -42, -126)
     timeHdr.lbl = timeHdr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     timeHdr.lbl:SetPoint("RIGHT", timeHdr, "RIGHT", 0, 0)
     timeHdr.lbl:SetTextColor(1, 0.82, 0)
@@ -824,8 +929,8 @@ function GVE:BuildLastOnlineWindow()
 
     -- Liste
     local sf = CreateFrame("ScrollFrame", "GVELastOnlineScroll", w, "FauxScrollFrameTemplate")
-    sf:SetWidth(340); sf:SetHeight(LO_ROWS * LO_ROW_H)
-    sf:SetPoint("TOPLEFT", w, "TOPLEFT", 16, -80)
+    sf:SetWidth(672); sf:SetHeight(LO_ROWS * LO_ROW_H)
+    sf:SetPoint("TOPLEFT", w, "TOPLEFT", 18, -144)
     sf:SetScript("OnVerticalScroll", function(self, off)
         FauxScrollFrame_OnVerticalScroll(self, off, LO_ROW_H, function() GVE:RefreshLastOnlineWindow() end)
     end)
@@ -834,18 +939,41 @@ function GVE:BuildLastOnlineWindow()
     w.rows = {}
     for i = 1, LO_ROWS do
         local row = CreateFrame("Frame", nil, w)
-        row:SetWidth(360); row:SetHeight(LO_ROW_H)
+        row:SetWidth(672); row:SetHeight(LO_ROW_H)
         row:SetPoint("TOPLEFT", sf, "TOPLEFT", 2, -(i-1) * LO_ROW_H)
-        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+        local bg = row:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        if i % 2 == 0 then
+            bg:SetTexture(0.08, 0.11, 0.17, 0.38)
+        else
+            bg:SetTexture(0.03, 0.05, 0.09, 0.26)
+        end
+        row.bg = bg
+
+        local divider = row:CreateTexture(nil, "BORDER")
+        divider:SetHeight(1)
+        divider:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+        divider:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -4, 0)
+        divider:SetTexture(0.22, 0.38, 0.55, 0.42)
+        row.divider = divider
+
+        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         row.name:SetPoint("LEFT", row, "LEFT", 0, 0)
-        row.name:SetWidth(150); row.name:SetJustifyH("LEFT")
-        row.rank = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.rank:SetPoint("LEFT", row, "LEFT", 155, 0)
-        row.rank:SetWidth(90); row.rank:SetJustifyH("LEFT")
+        row.name:SetWidth(240); row.name:SetHeight(LO_ROW_H)
+        row.name:SetJustifyH("LEFT"); row.name:SetJustifyV("MIDDLE")
+        row.name:SetWordWrap(false)
+        row.rank = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        row.rank:SetPoint("LEFT", row, "LEFT", 245, 0)
+        row.rank:SetWidth(245); row.rank:SetHeight(LO_ROW_H)
+        row.rank:SetJustifyH("LEFT"); row.rank:SetJustifyV("MIDDLE")
+        row.rank:SetWordWrap(false)
         row.rank:SetTextColor(0.6, 0.6, 0.6)
-        row.time = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.time:SetPoint("RIGHT", row, "RIGHT", -4, 0)
-        row.time:SetJustifyH("RIGHT")
+        row.time = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        row.time:SetWidth(165); row.time:SetHeight(LO_ROW_H)
+        row.time:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+        row.time:SetJustifyH("RIGHT"); row.time:SetJustifyV("MIDDLE")
+        row.time:SetWordWrap(false)
         row:Hide()
         w.rows[i] = row
     end
@@ -854,27 +982,27 @@ function GVE:BuildLastOnlineWindow()
     w.countText = w:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     w.countText:SetPoint("BOTTOM", w, "BOTTOM", 0, 12)
     w.countText:SetTextColor(0.6, 0.6, 0.6)
+
+    w.emptyText = w:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    w.emptyText:SetPoint("CENTER", sf, "CENTER", 0, 0)
+    w.emptyText:SetTextColor(0.65, 0.65, 0.65)
+    w.emptyText:Hide()
 end
 
 function GVE:RefreshLastOnlineWindow()
     local w = self.lastOnlineWin
     if not (w and w:IsShown()) then return end
 
-    -- Liste aufbauen (eigene Sortierung/Filter, unabhaengig vom Roster)
-    local list = {}
-    for _, m in ipairs(members) do
-        if not loFilterHours or (m.lastOnline or 0) >= loFilterHours then
-            list[#list+1] = m
-        end
-    end
-    table.sort(list, function(a, b)
-        local va, vb = a.lastOnline or 0, b.lastOnline or 0
-        if va == vb then return a.name < b.name end
-        if loSortAsc then return va < vb else return va > vb end
-    end)
+    local list = self:BuildLastOnlineList(members, loSearchStr, loFilterHours, loSortAsc)
 
     w.timeHdr.lbl:SetText((LASTONLINE or "Zuletzt Online")..(loSortAsc and " v" or " ^"))
-    w.countText:SetText(#list.." / "..#members)
+    w.countText:SetText(format(LO_TEXT.count, #list, #members))
+    if #list == 0 then
+        w.emptyText:SetText(#members == 0 and LO_TEXT.empty or LO_TEXT.noResults)
+        w.emptyText:Show()
+    else
+        w.emptyText:Hide()
+    end
 
     local offset = FauxScrollFrame_GetOffset(w.scroll)
     FauxScrollFrame_Update(w.scroll, #list, LO_ROWS, LO_ROW_H)
@@ -901,6 +1029,8 @@ function GVE:ToggleLastOnlineWindow()
     if w:IsShown() then
         w:Hide()
     else
+        SetGuildRosterShowOffline(true)
+        GuildRoster()
         w:Show()
         self:RefreshLastOnlineWindow()
     end
@@ -1954,7 +2084,8 @@ evtFrame:SetScript("OnEvent", function(self, event)
         end)
 
         Log("PLAYER_LOGIN: Ende")
-        print("|cff33aaff[Guild-View-Extended]|r loaded  |cffffcc00/gve|r oeffnet,  |cffffcc00/gve log|r zeigt das Log.")
+        local version = GetAddOnMetadata and GetAddOnMetadata("Guild-View-Extended", "Version") or "?"
+        print("|cff33aaff[Guild-View-Extended "..tostring(version).."]|r loaded  |cffffcc00/gve|r oeffnet,  |cffffcc00/gve log|r zeigt das Log.")
 
     elseif event == "GUILD_ROSTER_UPDATE" then
         -- Feuert beim Laden schon VOR PLAYER_LOGIN -> erst reagieren,
