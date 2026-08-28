@@ -54,6 +54,24 @@ Guild View Extended replaces the basic guild view with an expanded interface for
   public notes, officer notes, filters, counts, and an open member detail
   window. Offline members remain enabled.
 
+## Last Online window
+
+For guild leaders and officers, the **Last Online** window uses a wider,
+three-column layout for character name, guild rank, and last-online time. The
+member search updates immediately while typing and is combined with the
+existing minimum-offline-duration filter. **Clear** resets only the member
+search; **Reset** resets only the duration filter. The result count shows the
+number of matches alongside the complete roster size.
+
+Changing a search or time filter returns the list to its first row. Escape
+closes the window even while the search field has keyboard focus. Opening the
+window requests fresh roster data, including offline members.
+
+Version 1.1.2 identifies itself in the addon list and in the login chat message.
+If the message still shows an older version (or no version), the game is loading
+a different addon copy. Install the current release ZIP into the active
+client's `Interface/AddOns/` directory and use `/reload` before testing.
+
 ## CSV export
 
 1. Open Guild View Extended with `/gve` or the normal guild shortcut.

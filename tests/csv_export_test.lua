@@ -116,13 +116,21 @@ local function newWidget()
     local widget = {scripts = {}, shown = false}
     local methods = {
         CreateFontString = function() return newWidget() end,
+        CreateTexture = function() return newWidget() end,
         SetScript = function(self, event, handler) self.scripts[event] = handler end,
         SetPoint = function(self, ...)
             local points = rawget(self, "points") or {}
             self.points = points
             points[#points+1] = {...}
         end,
+        SetWidth = function(self, value) self.width = value end,
+        SetHeight = function(self, value) self.height = value end,
+        SetSize = function(self, width, height)
+            self.width, self.height = width, height
+        end,
         SetText = function(self, text) self.text = text end,
+        SetWordWrap = function(self, value) self.wordWrap = value end,
+        GetText = function(self) return self.text or "" end,
         SetFocus = function(self) self.focused = true end,
         ClearFocus = function(self) self.focused = false end,
         HighlightText = function(self) self.highlighted = true end,
@@ -162,6 +170,32 @@ do
 end
 
 do
+    UIDropDownMenu_SetWidth = function() end
+    UIDropDownMenu_Initialize = function() end
+    UIDropDownMenu_SetSelectedValue = function() end
+    UIDropDownMenu_SetText = function() end
+    FauxScrollFrame_SetOffset = function(frame, value) frame.offset = value end
+    GVE.lastOnlineWin = nil
+    GVE:BuildLastOnlineWindow()
+    local w = GVE.lastOnlineWin
+    equal(w.width, 720, "last-online window width")
+    equal(w.height, 600, "last-online window height")
+    equal(#w.rows, 20, "last-online visible row count")
+    equal(w.search.width, 390, "last-online search width")
+    equal(w.rows[1].rank.wordWrap, false, "long ranks cannot wrap into next row")
+    if not w.rows[1].divider then error("last-online row divider missing") end
+    equal(UISpecialFrames[#UISpecialFrames], "GVELastOnlineWindow",
+        "last-online Escape frame registration")
+
+    w.search:SetText("Arthas")
+    w.search.scripts.OnTextChanged(w.search)
+    equal(w.scroll.offset, 0, "last-online search resets scroll offset")
+    w:Show()
+    w.search.scripts.OnEscapePressed(w.search)
+    equal(w.shown, false, "focused last-online search closes via Escape")
+end
+
+do
     local offlineRequests, rosterRequests = 0, 0
     SetGuildRosterShowOffline = function(value)
         if value then offlineRequests = offlineRequests + 1 end
@@ -174,6 +208,31 @@ do
     equal(offlineRequests, 1, "live refresh includes offline members")
     equal(rosterRequests, 1, "live roster refresh after five seconds")
     equal(frame.rosterRefreshElapsed, 0, "live refresh timer reset")
+end
+
+do
+    local source = {
+        {name="Zulu", rank="Officer", lastOnline=240},
+        {name="Ärger", rank="Raider", lastOnline=120},
+        {name="ärztin", rank="Member", lastOnline=120},
+        {name="Alpha", rank="Member", lastOnline=12},
+    }
+
+    local list = GVE:BuildLastOnlineList(source, "ÄR", nil, false)
+    equal(#list, 2, "last-online search supports case-folded Umlauts")
+    equal(list[1].name, "Ärger", "last-online equal-time sort is deterministic")
+    equal(list[2].name, "ärztin", "last-online search returns all matches")
+
+    list = GVE:BuildLastOnlineList(source, "ärger", 24, false)
+    equal(#list, 1, "last-online search and time filter are combined")
+    equal(list[1].name, "Ärger", "last-online combined filter result")
+
+    list = GVE:BuildLastOnlineList(source, "", nil, true)
+    equal(list[1].name, "Alpha", "last-online ascending sort")
+    equal(list[#list].name, "Zulu", "last-online ascending sort end")
+
+    list = GVE:BuildLastOnlineList(source, "no-match", nil, false)
+    equal(#list, 0, "last-online no-result state")
 end
 
 do
