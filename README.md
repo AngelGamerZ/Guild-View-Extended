@@ -1,6 +1,6 @@
-# Guild View Extended
+# Guild-View-Extended
 
-Guild View Extended replaces the basic guild view with an expanded interface for **Ascension WoW on the World of Warcraft 3.3.5a client**.
+Guild-View-Extended replaces the basic guild view with an expanded interface for **World of Warcraft 3.3.5a (build 12340)**.
 
 ## Features
 
@@ -15,6 +15,8 @@ Guild View Extended replaces the basic guild view with an expanded interface for
 - Open member details and supported guild-management actions
 - Access guild controls and member invitations when permitted
 - View guild-related information and diagnostic logs in dedicated panels
+- Open synchronized, clickable profession links grouped by profession
+- Request fresh data directly from an online member through 3.3.5a addon whispers
 
 ## Screenshots
 <img width="2385" height="1160" alt="Screenshot 2026-07-20 175229" src="https://github.com/user-attachments/assets/e4c887d0-63af-442d-a37b-bc1d134d5bf7" />
@@ -24,7 +26,6 @@ Guild View Extended replaces the basic guild view with an expanded interface for
 
 ## Requirements
 
-- Ascension WoW
 - World of Warcraft client version 3.3.5a
 - Interface version `30300`
 - A guild membership for roster features
@@ -49,7 +50,7 @@ Guild View Extended replaces the basic guild view with an expanded interface for
 - Right-click the player's own character in the roster and choose
   **Gilde verlassen** or **Leave Guild**. A confirmation dialog must be
   accepted before `GuildLeave()` is called.
-- While Guild View Extended is visible, it requests the complete roster every
+- While Guild-View-Extended is visible, it requests the complete roster every
   five seconds. The existing `GUILD_ROSTER_UPDATE` path then refreshes members,
   public notes, officer notes, filters, counts, and an open member detail
   window. Offline members remain enabled.
@@ -67,14 +68,14 @@ Changing a search or time filter returns the list to its first row. Escape
 closes the window even while the search field has keyboard focus. Opening the
 window requests fresh roster data, including offline members.
 
-Version 1.1.2 identifies itself in the addon list and in the login chat message.
+Version 1.0 identifies itself in the addon list and in the login chat message.
 If the message still shows an older version (or no version), the game is loading
 a different addon copy. Install the current release ZIP into the active
 client's `Interface/AddOns/` directory and use `/reload` before testing.
 
 ## CSV export
 
-1. Open Guild View Extended with `/gve` or the normal guild shortcut.
+1. Open Guild-View-Extended with `/gve` or the normal guild shortcut.
 2. Click **CSV exportieren** on a German client or **Export CSV** on another
    client. The button is at the top of the guild-log panel on the right.
 3. If the complete roster is not ready yet, the addon requests it and waits for
@@ -102,27 +103,53 @@ Jaina,Raider
 Thrall,Officer
 ```
 
+## Professions
+
+The **Berufe** / **Professions** tab groups synchronized players by profession.
+A player with multiple professions appears in every matching category. Players
+without synchronized data remain available in the **Not synchronized** group.
+
+The single search field accepts player and profession names. Select a player to
+see their exact WoW profession hyperlinks and snapshot age on the right.
+
+This is a request-based snapshot system:
+
+- Guild-View-Extended scans the player's own 3.3.5a spellbook and uses the
+  second return value of `GetSpellLink()` for each linkable profession. It also
+  refreshes immediately when a profession is Shift-clicked from the spellbook.
+- The complete client-created hyperlink is retained byte-for-byte. Other guild
+  members see one clickable link such as `[Schmiedekunst]`; clicking it opens
+  WoW's normal linked-profession window, where the client displays the complete
+  profession contents.
+- `GetTradeSkillListLink()` remains a guarded fallback while the player's own
+  profession window is open.
+- Fresh requests require the target player to be online and running a
+  compatible Guild-View-Extended version. Offline players show the last cache.
+- Only validated profession links, skill values, and snapshot times are
+  transferred. Guild notes and unrelated character data are not.
+- Profession sharing is enabled by default and can be disabled with the
+  checkbox at the bottom of the tab.
+
+Transfers use the legacy `SendAddonMessage`/`CHAT_MSG_ADDON` APIs, targeted
+whispers, throttled chunks, strict size limits, guild-member validation, and an
+atomic cache update after a complete transfer. No Retail, Battle.net, HTTP, or
+clipboard APIs are used. Cached synchronization data is stored in
+`GVESyncData` and is reset on a guild change or after 30 days.
+
+## Guild Control
+
+Saving the stock 3.3.5a Guild Control dialog no longer opens the old guild
+window. Guild View suppresses only the `GuildStatus_Update()` call made during
+that GVE-owned save operation; Blizzard's permission-saving logic remains
+unchanged. Guild Control follows the original 3.3.5a rule and is available to
+the guild leader.
+
 ## Backup and rollback
 
-The pre-export source state is stored in
-`Guild-View-Extended-pre-csv-20260728-144106.zip` in this addon directory.
-Its SHA-256 is
-`9566F98931959ABBD4D9DCF280F8258B5601EF8CDD38A5F8C03AD670CDA74BEA`.
-
-To roll back, close World of Warcraft, move the current addon directory to a
-safe temporary name, extract the archive into `Interface/AddOns/`, and verify
-that the resulting path is
-`Interface/AddOns/Guild-View-Extended/Guild-View-Extended.toc`. The archive
-contains the complete pre-change directory, including its Git metadata.
-
-An additional snapshot from immediately before the member-action and live
-refresh changes is stored as
-`Guild-View-Extended-pre-guild-actions-20260728-145630.zip` with SHA-256
-`91120A28F5D3DF4F76134487156286392374E8E5D7C05EEC81AE860EBB467843`.
-
-The published 1.1.0 state immediately before the two-column CSV correction is
-stored as `Guild-View-Extended-pre-1.1.1-20260728-151729.zip` with SHA-256
-`01C5EA4DB3FDA3D32D1EE287502E4879EF692C45175CFF03EC3F095301DF7502`.
+Before replacing an installed copy, close World of Warcraft and copy the
+current `Interface/AddOns/Guild-View-Extended` directory to a safe location.
+To roll back, replace the addon directory with that copy and start the client
+again. Development backups are intentionally not included in release archives.
 
 ## Development tests
 
@@ -133,9 +160,19 @@ deduplication, sorting, 5,000/5,001-member, dialog, Escape, offline-roster, and
 asynchronous event cases. It also verifies group invitations, the confirmed
 guild-leave action, and the automatic roster refresh timer.
 
+Run `lua tests/sync_snapshot_test.lua` to verify profession serialization,
+UTF-8 profession names, authentic 3.3.5a trade links with short owner IDs and
+opaque recipe bitmaps, timestamps, and rejection of malformed snapshots.
+Both production Lua files and both test files are also parsed explicitly as
+Lua 5.1 before a local test package is built.
+
 ## Compatibility notes
 
-The addon is designed specifically for Ascension's 3.3.5a client and relies on Blizzard guild-frame globals available in that environment. It replaces the global guild/friends toggle behavior, so compatibility with other addons that replace the same interface should be tested. The current interface and diagnostics contain a mixture of German and client-localized text.
+The addon targets World of Warcraft 3.3.5a build 12340 and uses the legacy
+guild, trade-skill, hyperlink, and addon-message APIs available in that client.
+It replaces the global guild/friends toggle behavior, so compatibility with
+other addons that replace the same interface should be tested. It does not use
+Retail guild, club, or Battle.net APIs.
 
 ## Privacy
 
@@ -145,4 +182,4 @@ The repository contains addon source only. Do not publish files from `WTF/Accoun
 
 No open-source license is currently granted by this repository. All rights are reserved unless the repository owner states otherwise.
 
-Guild View Extended is an independent community addon and is not affiliated with or endorsed by Ascension or Blizzard Entertainment.
+Guild-View-Extended is an independent community addon and is not affiliated with or endorsed by Blizzard Entertainment.

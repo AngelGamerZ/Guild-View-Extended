@@ -1,8 +1,9 @@
 ## Interface: 30300
 ## Title: Guild-View-Extended
-## Notes: Erweitertes Gildenfenster mit Filter, Suche und Protokoll | WoW 3.3.5a / Ascension
+## Notes: Erweitertes Gildenfenster mit Filter, Suche und synchronisierten Berufslinks | WoW 3.3.5a
 ## Author: Claude
-## Version: 1.1.2
-## SavedVariables: GVEConfig
+## Version: 1.0
+## SavedVariables: GVEConfig, GVESyncData
 
 Guild-View-Extended.lua
+Guild-View-Extended-Sync.lua

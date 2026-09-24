@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------
 -- Guild-View-Extended
--- Erweitertes Gildenfenster fuer WoW 3.3.5a / Ascension: Conquest of Azeroth
+-- Erweitertes Gildenfenster fuer World of Warcraft 3.3.5a (Build 12340)
 -- Oeffnen: /gve oder /guildview  (oder die eigene Gildentaste)
 ---------------------------------------------------------------------------
 local GVE = {}
@@ -47,6 +47,11 @@ local function Log(msg)
     local t = GVE.log
     t[#t+1] = date("%H:%M:%S").."  "..tostring(msg)
     if #t > LOG_MAX then table.remove(t, 1) end
+end
+
+-- Auch optionale GuildView-Module schreiben in denselben kopierbaren Log.
+function GVE:AddLog(msg)
+    Log(msg)
 end
 
 local function Guard(label, fn, ...)
@@ -115,9 +120,9 @@ local W, H     = 1020, 640
 local LOG_W    = 220
 local PAD      = 12
 local TITLE_H  = 32
-local FILTER_H = 30
-local COL_H    = 18
-local ROW_H    = 16
+local FILTER_H = 34
+local COL_H    = 22
+local ROW_H    = 20
 local BOTTOM_H = 130
 local ROSTER_REFRESH_SECONDS = 5
 
@@ -126,10 +131,8 @@ local ROSTER_H = H - PAD - TITLE_H - 6 - FILTER_H - 4 - COL_H - 2 - BOTTOM_H - P
 local NUM_ROWS = math.floor(ROSTER_H / ROW_H)
 
 ---------------------------------------------------------------------------
--- Klassen-Farben
--- Ascension CoA hat 31 Klassen (10 Standard + 21 Custom). Nichts hard-
--- coden: der Client befuellt RAID_CLASS_COLORS selbst (inkl. Customs).
--- Klassenliste fuer den Filter wird dynamisch aus dem Roster aufgebaut.
+-- Klassen-Farben. Nichts hard-coden: der Client befuellt
+-- RAID_CLASS_COLORS. Die Filterliste entsteht dynamisch aus dem Roster.
 ---------------------------------------------------------------------------
 local function ClassColor(token)
     local c = token and ((CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS or {})[token])
@@ -199,6 +202,10 @@ local function CaseFoldName(value)
         folded = folded:gsub(pair[1], pair[2])
     end
     return folded:lower()
+end
+
+function GVE:CaseFoldName(value)
+    return CaseFoldName(tostring(value or ""))
 end
 
 local function CleanCharacterName(value)
@@ -282,6 +289,87 @@ local PANEL_BD = {
     insets={left=3,right=3,top=3,bottom=3},
 }
 
+-- Flache, client-neutrale Gestaltung fuer die GuildView-eigenen Buttons.
+-- Das 3.3.5a-UIPanelButtonTemplate kann je nach Client-Skin sehr dominant
+-- (zum Beispiel rot) erscheinen. Blizzards eigene Dialoge bleiben davon
+-- unberuehrt.
+local UI_COLOR = {
+    window     = {0.035, 0.047, 0.078, 0.98},
+    panel      = {0.063, 0.086, 0.129, 0.96},
+    panelAlt   = {0.082, 0.114, 0.165, 0.96},
+    hover      = {0.105, 0.170, 0.235, 0.98},
+    pressed    = {0.050, 0.145, 0.220, 0.98},
+    selected   = {0.075, 0.205, 0.305, 0.98},
+    line       = {0.153, 0.204, 0.278, 0.90},
+    accent     = {0.200, 0.667, 1.000, 1.00},
+    text       = {0.933, 0.957, 0.984, 1.00},
+    muted      = {0.573, 0.635, 0.710, 1.00},
+    disabled   = {0.250, 0.290, 0.340, 0.90},
+}
+
+local function SetRGBA(target, method, color)
+    target[method](target, color[1], color[2], color[3], color[4])
+end
+
+local function RefreshFlatButton(button)
+    local background, border
+    if not button:IsEnabled() then
+        background, border = UI_COLOR.window, UI_COLOR.disabled
+    elseif button.flatPressed then
+        background, border = UI_COLOR.pressed, UI_COLOR.accent
+    elseif button.flatSelected then
+        background, border = UI_COLOR.selected, UI_COLOR.accent
+    elseif button.flatHovered then
+        background, border = UI_COLOR.hover, UI_COLOR.accent
+    elseif button.flatPrimary then
+        background, border = UI_COLOR.selected, UI_COLOR.accent
+    else
+        background, border = UI_COLOR.panelAlt, UI_COLOR.line
+    end
+    SetRGBA(button, "SetBackdropColor", background)
+    SetRGBA(button, "SetBackdropBorderColor", border)
+end
+
+local function MakeFlatButton(parent, width, height, text, primary)
+    local button = CreateFrame("Button", nil, parent)
+    button:SetSize(width, height)
+    button:SetBackdrop(PANEL_BD)
+    button:SetNormalFontObject(GameFontNormalSmall)
+    button:SetHighlightFontObject(GameFontHighlightSmall)
+    button:SetDisabledFontObject(GameFontDisableSmall)
+    button:SetText(text or "")
+    button.flatPrimary = primary and true or false
+    button:SetScript("OnEnter", function(self)
+        self.flatHovered = true
+        RefreshFlatButton(self)
+    end)
+    button:SetScript("OnLeave", function(self)
+        self.flatHovered = nil
+        self.flatPressed = nil
+        RefreshFlatButton(self)
+    end)
+    button:SetScript("OnMouseDown", function(self)
+        if self:IsEnabled() then self.flatPressed = true; RefreshFlatButton(self) end
+    end)
+    button:SetScript("OnMouseUp", function(self)
+        self.flatPressed = nil
+        RefreshFlatButton(self)
+    end)
+    button:SetScript("OnEnable", RefreshFlatButton)
+    button:SetScript("OnDisable", RefreshFlatButton)
+    RefreshFlatButton(button)
+    return button
+end
+
+local function StyleFlatEditBox(editBox)
+    editBox:SetBackdrop(PANEL_BD)
+    SetRGBA(editBox, "SetBackdropColor", UI_COLOR.window)
+    SetRGBA(editBox, "SetBackdropBorderColor", UI_COLOR.line)
+    editBox:SetFontObject(GameFontHighlightSmall)
+    editBox:SetTextColor(UI_COLOR.text[1], UI_COLOR.text[2], UI_COLOR.text[3])
+    if editBox.SetTextInsets then editBox:SetTextInsets(7, 7, 0, 0) end
+end
+
 ---------------------------------------------------------------------------
 -- Hilfsfunktion: einfache Checkbox ohne globalen Namen
 ---------------------------------------------------------------------------
@@ -319,8 +407,8 @@ function GVE:LoadRoster()
         local name, rank, rankIndex, level, class, zone,
               note, onote, isOnline, status, cf = GetGuildRosterInfo(i)
         if name then
-            -- Custom-Klassen (CoA) liefern teils leeren lokalisierten Namen;
-            -- dann auf den classFile-Token zurueckfallen (und umgekehrt).
+            -- Bei fehlender Lokalisierung auf den classFile-Token
+            -- zurueckfallen (und umgekehrt).
             local disp = (class and class ~= "" and class) or cf or ""
             local key  = (cf and cf ~= "" and cf) or disp
 
@@ -363,6 +451,19 @@ function GVE:LoadRoster()
     self:UpdateRankCheckboxes()
     self:UpdateClassCheckboxes()
     self:ApplyFilter()
+    if type(self.rosterListener) == "function" then
+        Guard("RosterListener", self.rosterListener, self)
+    end
+end
+
+-- Schmale, nur-lesende Schnittstelle fuer optionale GuildView-Module.
+-- Die Tabelle darf von Verbrauchern nicht veraendert werden.
+function GVE:GetMembers()
+    return members
+end
+
+function GVE:SetRosterListener(listener)
+    self.rosterListener = listener
 end
 
 function GVE:ApplyFilter()
@@ -403,13 +504,15 @@ function GVE:Build()
     f:SetSize(W, H)
     f:SetPoint("CENTER")
     f:SetMovable(true)
+    f:SetClampedToScreen(true)
     f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop",  f.StopMovingOrSizing)
     f:SetFrameStrata("HIGH")
-    f:SetBackdrop(MAIN_BD)
-    f:SetBackdropColor(0, 0, 0, 0.95)
+    f:SetBackdrop(PANEL_BD)
+    SetRGBA(f, "SetBackdropColor", UI_COLOR.window)
+    SetRGBA(f, "SetBackdropBorderColor", UI_COLOR.line)
     f:Hide()
     self.f = f
 
@@ -420,6 +523,10 @@ function GVE:Build()
     -- ESC ruft f:Hide() direkt auf (nicht GVE:Close) -> Aufraeumen hier
     f:SetScript("OnHide", function()
         if GVE.filterPanel then GVE.filterPanel:Hide() end
+        if GVE.filterBtn then
+            GVE.filterBtn.flatSelected = nil
+            RefreshFlatButton(GVE.filterBtn)
+        end
         if GVE.lastOnlineWin then GVE.lastOnlineWin:Hide() end
         if GuildControlPopupFrame and GuildControlPopupFrame:IsShown() then
             GuildControlPopupFrame:Hide()
@@ -442,6 +549,7 @@ function GVE:Build()
 
     local mc = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     mc:SetPoint("TOP", f, "TOP", 0, -27)
+    mc:SetTextColor(UI_COLOR.muted[1], UI_COLOR.muted[2], UI_COLOR.muted[3])
     self.memberCount = mc
 
     local xb = CreateFrame("Button", nil, f, "UIPanelCloseButton")
@@ -451,7 +559,7 @@ function GVE:Build()
     sep:SetWidth(1)
     sep:SetPoint("TOPRIGHT",    f, "TOPRIGHT",    -(LOG_W + PAD*2 + 2), -PAD)
     sep:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -(LOG_W + PAD*2 + 2),  PAD)
-    sep:SetTexture(0.3, 0.5, 0.8, 0.3)
+    sep:SetTexture(UI_COLOR.line[1], UI_COLOR.line[2], UI_COLOR.line[3], 0.75)
 
     self:BuildFilterBar()
     self:BuildFilterPanel()   -- vor ColHeaders, damit filterPanel referenzierbar
@@ -618,9 +726,10 @@ function GVE:BuildFilterBar()
     slbl:SetText(SEARCH or "Search")
     slbl:SetTextColor(0.7, 0.7, 0.7)
 
-    local sbox = CreateFrame("EditBox", "GVESearchBox", f, "InputBoxTemplate")
-    sbox:SetSize(160, 20)
+    local sbox = CreateFrame("EditBox", "GVESearchBox", f)
+    sbox:SetSize(174, 24)
     sbox:SetPoint("LEFT", slbl, "RIGHT", 5, 0)
+    StyleFlatEditBox(sbox)
     sbox:SetAutoFocus(false)
     sbox:SetMaxLetters(40)
     sbox:SetScript("OnTextChanged", function(self)
@@ -630,10 +739,8 @@ function GVE:BuildFilterBar()
     sbox:SetScript("OnEscapePressed", sbox.ClearFocus)
     self.searchBox = sbox
 
-    local fbtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    fbtn:SetSize(90, 20)
+    local fbtn = MakeFlatButton(f, 90, 24, "Filter")
     fbtn:SetPoint("LEFT", sbox, "RIGHT", 8, 0)
-    fbtn:SetText("Filter")
     fbtn:SetScript("OnClick", function() GVE:ToggleFilterPanel() end)
     self.filterBtn = fbtn
 
@@ -655,10 +762,8 @@ function GVE:BuildFilterBar()
 
     -- Gildenoptionen (Blizzards GuildControlPopupFrame) -- nur fuer den
     -- Gildenmeister aktiv, wie beim Standard-Gildenfenster.
-    local gcb = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    gcb:SetSize(130, 20)
+    local gcb = MakeFlatButton(f, 130, 24, GUILDCONTROL or "Guild Controls")
     gcb:SetPoint("TOPRIGHT", f, "TOPRIGHT", -(LOG_W + PAD * 2 + 8), yOff)
-    gcb:SetText(GUILDCONTROL or "Guild Controls")
     gcb:SetScript("OnClick", function()
         local p = GuildControlPopupFrame
         if not p then
@@ -670,6 +775,7 @@ function GVE:BuildFilterBar()
             return
         end
         GuildRoster()   -- Rangdaten anfordern
+        GVE.guildControlOwned = true
         -- Blizzard verankert das Popup am FriendsFrame; an unser Fenster haengen
         p:ClearAllPoints()
         p:SetPoint("TOPLEFT", f, "TOPRIGHT", -6, -12)
@@ -690,10 +796,8 @@ function GVE:BuildFilterBar()
 
     -- Mitglied einladen: Blizzards Standard-Dialog (ADD_GUILDMEMBER),
     -- nur aktiv mit Einladerecht -- wie beim Standard-Gildenfenster.
-    local amb = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    amb:SetSize(120, 20)
+    local amb = MakeFlatButton(f, 120, 24, ADD_GUILDMEMBER or "Add Member", true)
     amb:SetPoint("RIGHT", gcb, "LEFT", -6, 0)
-    amb:SetText(ADD_GUILDMEMBER or "Add Member")
     amb:SetScript("OnClick", function()
         StaticPopup_Show("ADD_GUILDMEMBER")
     end)
@@ -701,10 +805,8 @@ function GVE:BuildFilterBar()
 
     -- "Zuletzt Online": nur fuer Gildenmeister/Offiziere (siehe
     -- UpdateGuildControlButton). Oeffnet Panel mit Sortierung + Zeitfilter.
-    local lob = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    lob:SetWidth(110); lob:SetHeight(20)
+    local lob = MakeFlatButton(f, 110, 24, LASTONLINE or "Zuletzt Online")
     lob:SetPoint("RIGHT", amb, "LEFT", -6, 0)
-    lob:SetText(LASTONLINE or "Zuletzt Online")
     lob:SetScript("OnClick", function() GVE:ToggleLastOnlineWindow() end)
     lob:Hide()
     self.lastOnlineBtn = lob
@@ -1037,10 +1139,10 @@ function GVE:ToggleLastOnlineWindow()
 end
 
 function GVE:UpdateGuildControlButton()
-    -- Gildenoptionen auch fuer Offiziere (koennen auf Ascension z.B.
-    -- Raenge anpassen); was genau erlaubt ist, setzt der Server durch.
+    -- Der originale 3.3.5a-Guild-Control-Dialog ist nur fuer den
+    -- Gildenmeister bestimmt.
     if self.guildControlBtn then
-        if IsGuildLeader() or CanViewOfficerNote() then
+        if IsGuildLeader() then
             self.guildControlBtn:Enable()
         else
             self.guildControlBtn:Disable()
@@ -1074,10 +1176,13 @@ function GVE:RefreshFilterButton()
     if #parts > 0 then
         self.filterBtn:SetText("|cff33aaff* Filter|r")
         self.filterLabel:SetText(table.concat(parts, "  |cff444444·|r  "))
+        self.filterBtn.flatPrimary = true
     else
         self.filterBtn:SetText("Filter")
         self.filterLabel:SetText("")
+        self.filterBtn.flatPrimary = nil
     end
+    RefreshFlatButton(self.filterBtn)
 end
 
 ---------------------------------------------------------------------------
@@ -1087,7 +1192,7 @@ end
 -- KEINE neuen Frames erstellt -> vermeidet "already exists"-Lua-Fehler.
 ---------------------------------------------------------------------------
 local MAX_RANKS   = 10
-local MAX_CLASSES = 33   -- CoA hat aktuell 31 Klassen, etwas Puffer
+local MAX_CLASSES = 20   -- dynamische Liste; Puffer fuer 3.3.5a-Clients
 
 function GVE:BuildFilterPanel()
     local f   = self.f
@@ -1098,8 +1203,9 @@ function GVE:BuildFilterPanel()
     fp:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -4)
     fp:SetFrameStrata("DIALOG")
     fp:EnableMouse(true)   -- Klicks schlucken, nicht zur Spielerliste durchreichen
-    fp:SetBackdrop(MAIN_BD)
-    fp:SetBackdropColor(0, 0, 0, 0.97)
+    fp:SetBackdrop(PANEL_BD)
+    SetRGBA(fp, "SetBackdropColor", UI_COLOR.panel)
+    SetRGBA(fp, "SetBackdropBorderColor", UI_COLOR.line)
     fp:Hide()
     self.filterPanel = fp
 
@@ -1111,18 +1217,17 @@ function GVE:BuildFilterPanel()
     -- ---- Klasse (dynamisch aus dem Roster, wie die Raenge) ----
     local cTitle = fp:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     cTitle:SetPoint("TOPLEFT", fp, "TOPLEFT", 10, yy)
-    cTitle:SetText("|cff33aaff-- "..(CLASS_LABEL or CLASS or "Class").." --|r")
+    cTitle:SetText("|cff33aaff"..(CLASS_LABEL or CLASS or "Class").."|r")
     yy = yy - 18
 
-    local callBtn = CreateFrame("Button", nil, fp, "UIPanelButtonTemplate")
-    callBtn:SetSize(56, 16); callBtn:SetPoint("TOPLEFT", fp, "TOPLEFT", 10, yy)
-    callBtn:SetText(ALL or "All")
+    local callBtn = MakeFlatButton(fp, 62, 20, ALL or "All")
+    callBtn:SetPoint("TOPLEFT", fp, "TOPLEFT", 10, yy)
     callBtn:SetScript("OnClick", function()
         wipe(filterClasses)
         self:RefreshClassChecks()
         self:ApplyFilter()
     end)
-    yy = yy - 20
+    yy = yy - 24
 
     self.classCBs    = {}
     self.classCBRows = math.ceil(MAX_CLASSES / NCOLS)
@@ -1153,18 +1258,17 @@ function GVE:BuildFilterPanel()
     -- ---- Rang ----
     local rTitle = fp:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     rTitle:SetPoint("TOPLEFT", fp, "TOPLEFT", 10, yy)
-    rTitle:SetText("|cff33aaff-- "..(RANK_LABEL or "Rank").." --|r")
+    rTitle:SetText("|cff33aaff"..(RANK_LABEL or "Rank").."|r")
     yy = yy - 18
 
-    local rallBtn = CreateFrame("Button", nil, fp, "UIPanelButtonTemplate")
-    rallBtn:SetSize(56, 16); rallBtn:SetPoint("TOPLEFT", fp, "TOPLEFT", 10, yy)
-    rallBtn:SetText(ALL or "All")
+    local rallBtn = MakeFlatButton(fp, 62, 20, ALL or "All")
+    rallBtn:SetPoint("TOPLEFT", fp, "TOPLEFT", 10, yy)
     rallBtn:SetScript("OnClick", function()
         wipe(filterRanks)
         self:RefreshRankChecks()
         self:ApplyFilter()
     end)
-    yy = yy - 20
+    yy = yy - 24
 
     -- Pre-allokiere MAX_RANKS Checkboxen (keine globalen Namen -> kein Kollisionsproblem)
     self.rankCBs    = {}   -- die Checkbox-Widgets
@@ -1248,7 +1352,14 @@ end
 
 function GVE:ToggleFilterPanel()
     local fp = self.filterPanel
-    if fp:IsShown() then fp:Hide() else fp:Show() end
+    if fp:IsShown() then
+        fp:Hide()
+        self.filterBtn.flatSelected = nil
+    else
+        fp:Show()
+        self.filterBtn.flatSelected = true
+    end
+    RefreshFlatButton(self.filterBtn)
 end
 
 ---------------------------------------------------------------------------
@@ -1266,17 +1377,17 @@ function GVE:BuildColHeaders()
 
         local bg = btn:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetTexture(0.10, 0.16, 0.26, 0.9)
+        bg:SetTexture(UI_COLOR.panelAlt[1], UI_COLOR.panelAlt[2], UI_COLOR.panelAlt[3], 0.96)
 
         local brd = btn:CreateTexture(nil, "BORDER")
         brd:SetHeight(1)
         brd:SetPoint("BOTTOMLEFT",  btn, "BOTTOMLEFT")
         brd:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT")
-        brd:SetTexture(0.2, 0.4, 0.65, 0.6)
+        brd:SetTexture(UI_COLOR.line[1], UI_COLOR.line[2], UI_COLOR.line[3], 0.95)
 
         local lbl = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         lbl:SetPoint("LEFT", btn, "LEFT", 4, 0)
-        lbl:SetTextColor(1, 0.82, 0)
+        lbl:SetTextColor(UI_COLOR.muted[1], UI_COLOR.muted[2], UI_COLOR.muted[3])
         btn.lbl = lbl; btn.colKey = col.key; btn.colLabel = col.label
 
         btn:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
@@ -1295,6 +1406,11 @@ function GVE:RefreshColHeaders()
     for _, btn in ipairs(self.colHeaders or {}) do
         local arrow = (sortKey == btn.colKey) and (sortAsc and " v" or " ^") or ""
         btn.lbl:SetText(btn.colLabel .. arrow)
+        if sortKey == btn.colKey then
+            btn.lbl:SetTextColor(UI_COLOR.accent[1], UI_COLOR.accent[2], UI_COLOR.accent[3])
+        else
+            btn.lbl:SetTextColor(UI_COLOR.muted[1], UI_COLOR.muted[2], UI_COLOR.muted[3])
+        end
     end
 end
 
@@ -1323,6 +1439,11 @@ function GVE:BuildRosterRows()
     sf:SetScript("OnVerticalScroll", function(self, off)
         FauxScrollFrame_OnVerticalScroll(self, off, ROW_H, function() GVE:RefreshRoster() end)
     end)
+    sf:EnableMouseWheel(true)
+    sf:SetScript("OnMouseWheel", function(self, delta)
+        local bar = _G[(self:GetName() or "").."ScrollBar"]
+        if bar then bar:SetValue(bar:GetValue() - delta * ROW_H) end
+    end)
 
     self.rows = {}
     for i = 1, NUM_ROWS do
@@ -1332,9 +1453,21 @@ function GVE:BuildRosterRows()
 
         local bg = row:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
-        bg:SetTexture(i%2==0 and 0.09 or 0.05, i%2==0 and 0.09 or 0.05, 0.15, 0.55)
+        if i % 2 == 0 then
+            bg:SetTexture(0.063, 0.086, 0.129, 0.80)
+        else
+            bg:SetTexture(0.035, 0.047, 0.078, 0.72)
+        end
 
-        row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+        local line = row:CreateTexture(nil, "BORDER")
+        line:SetHeight(1)
+        line:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+        line:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+        line:SetTexture(UI_COLOR.line[1], UI_COLOR.line[2], UI_COLOR.line[3], 0.55)
+
+        local highlight = row:CreateTexture(nil, "HIGHLIGHT")
+        highlight:SetAllPoints()
+        highlight:SetTexture(UI_COLOR.accent[1], UI_COLOR.accent[2], UI_COLOR.accent[3], 0.12)
         -- Rechtsklick: Blizzards Standard-Kontextmenue (Fluestern, Einladen,
         -- Ziel, ...) -- dasselbe wie im normalen Gildenfenster.
         row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -1363,6 +1496,7 @@ function GVE:BuildRosterRows()
             fs:SetPoint("LEFT", row, "LEFT", fx + 2, 0)
             fs:SetJustifyH("LEFT")
             fs:SetJustifyV("MIDDLE")
+            fs:SetWordWrap(false)
             row.fields[#row.fields+1] = fs
             fx = fx + col.w + 1
         end
@@ -1789,16 +1923,15 @@ function GVE:BuildBottomPanels()
     mf:SetSize(halfW, panH)
     mf:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", PAD, PAD)
     mf:SetBackdrop(PANEL_BD)
-    mf:SetBackdropColor(0.04, 0.04, 0.10, 0.85)
+    SetRGBA(mf, "SetBackdropColor", UI_COLOR.panel)
+    SetRGBA(mf, "SetBackdropBorderColor", UI_COLOR.line)
     local mt = mf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     mt:SetPoint("TOPLEFT", mf, "TOPLEFT", 7, -5)
-    mt:SetText("|cff33aaff>> |r"..(GUILD_MOTD_LABEL or "Message of the Day"))
+    mt:SetText("|cff33aaff"..(GUILD_MOTD_LABEL or "Message of the Day").."|r")
 
     -- Bearbeiten (nur mit MOTD-Recht sichtbar)
-    local meb = CreateFrame("Button", nil, mf, "UIPanelButtonTemplate")
-    meb:SetWidth(70); meb:SetHeight(16)
+    local meb = MakeFlatButton(mf, 70, 20, EDIT or "Edit")
     meb:SetPoint("TOPRIGHT", mf, "TOPRIGHT", -6, -4)
-    meb:SetText(EDIT or "Edit")
     meb:SetScript("OnClick", function()
         GVE:ShowTextEditor(GUILD_MOTD_LABEL or "Message of the Day", 128,
             GetGuildRosterMOTD() or "",
@@ -1814,22 +1947,22 @@ function GVE:BuildBottomPanels()
     self.motdText:SetPoint("TOPLEFT",     mt, "BOTTOMLEFT", 0, -3)
     self.motdText:SetPoint("BOTTOMRIGHT", mf, "BOTTOMRIGHT", -6, 5)
     self.motdText:SetJustifyH("LEFT"); self.motdText:SetJustifyV("TOP")
-    self.motdText:SetWordWrap(true); self.motdText:SetTextColor(0.88, 0.88, 0.78)
+    self.motdText:SetWordWrap(true)
+    self.motdText:SetTextColor(UI_COLOR.text[1], UI_COLOR.text[2], UI_COLOR.text[3])
 
     local gf = CreateFrame("Frame", nil, f)
     gf:SetSize(halfW, panH)
     gf:SetPoint("BOTTOMLEFT", mf, "BOTTOMRIGHT", 8, 0)
     gf:SetBackdrop(PANEL_BD)
-    gf:SetBackdropColor(0.04, 0.04, 0.10, 0.85)
+    SetRGBA(gf, "SetBackdropColor", UI_COLOR.panel)
+    SetRGBA(gf, "SetBackdropBorderColor", UI_COLOR.line)
     local gt = gf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     gt:SetPoint("TOPLEFT", gf, "TOPLEFT", 7, -5)
-    gt:SetText("|cff33aaff>> |r"..(GUILD_INFORMATION or "Guild Information"))
+    gt:SetText("|cff33aaff"..(GUILD_INFORMATION or "Guild Information").."|r")
 
     -- Bearbeiten (nur mit Gildeninfo-Recht sichtbar)
-    local geb = CreateFrame("Button", nil, gf, "UIPanelButtonTemplate")
-    geb:SetWidth(70); geb:SetHeight(16)
+    local geb = MakeFlatButton(gf, 70, 20, EDIT or "Edit")
     geb:SetPoint("TOPRIGHT", gf, "TOPRIGHT", -6, -4)
-    geb:SetText(EDIT or "Edit")
     geb:SetScript("OnClick", function()
         GVE:ShowTextEditor(GUILD_INFORMATION or "Guild Information", 500,
             GetGuildInfoText() or "",
@@ -1854,7 +1987,8 @@ function GVE:BuildBottomPanels()
     it:SetPoint("TOPLEFT", child, "TOPLEFT", 0, 0)
     it:SetWidth(halfW - 16)
     it:SetJustifyH("LEFT"); it:SetJustifyV("TOP")
-    it:SetWordWrap(true); it:SetTextColor(0.88, 0.88, 0.78)
+    it:SetWordWrap(true)
+    it:SetTextColor(UI_COLOR.text[1], UI_COLOR.text[2], UI_COLOR.text[3])
     self.infoText   = it
     self.infoScroll = isf
 
@@ -1906,16 +2040,15 @@ function GVE:BuildLogPanel()
     lf:SetSize(LOG_W - PAD, logH)
     lf:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, -PAD)
     lf:SetBackdrop(PANEL_BD)
-    lf:SetBackdropColor(0.04, 0.04, 0.10, 0.85)
+    SetRGBA(lf, "SetBackdropColor", UI_COLOR.panel)
+    SetRGBA(lf, "SetBackdropBorderColor", UI_COLOR.line)
 
     local lt = lf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     lt:SetPoint("TOP", lf, "TOP", 0, -5)
-    lt:SetText("|cff33aaff>> |r"..(GUILD_EVENT_LOG_TITLE or "Guild Log"))
+    lt:SetText("|cff33aaff"..(GUILD_EVENT_LOG_TITLE or "Guild Log").."|r")
 
-    local csvButton = CreateFrame("Button", nil, lf, "UIPanelButtonTemplate")
-    csvButton:SetWidth(150); csvButton:SetHeight(20)
+    local csvButton = MakeFlatButton(lf, 150, 24, CSV_TEXT.button, true)
     csvButton:SetPoint("TOP", lf, "TOP", 0, -24)
-    csvButton:SetText(CSV_TEXT.button)
     csvButton:SetScript("OnClick", function()
         Guard("CSVExportRequest", function() GVE:RequestCSVExport() end)
     end)
@@ -1941,6 +2074,11 @@ function GVE:BuildLogPanel()
 
     lsf:SetScript("OnVerticalScroll", function(self, off)
         FauxScrollFrame_OnVerticalScroll(self, off, LOG_ROW_H, function() GVE:RefreshLog() end)
+    end)
+    lsf:EnableMouseWheel(true)
+    lsf:SetScript("OnMouseWheel", function(self, delta)
+        local bar = _G[(self:GetName() or "").."ScrollBar"]
+        if bar then bar:SetValue(bar:GetValue() - delta * LOG_ROW_H) end
     end)
 end
 
@@ -1999,8 +2137,8 @@ function GVE:Toggle()
     if self.f:IsShown() then self:Close() else self:Open() end
 end
 
--- In 3.3.5a gibt es KEIN ToggleGuildFrame (das kam erst mit Cataclysm).
--- Blizzards Guild-Keybind (TOGGLEGUILDTAB) ruft ToggleFriendsFrame(3) auf --
+-- Blizzards 3.3.5a-Guild-Keybind (TOGGLEGUILDTAB) ruft
+-- ToggleFriendsFrame(3) auf --
 -- Tab 3 = Gilde im Social-Fenster. Wir fangen genau diesen Aufruf ab und
 -- oeffnen stattdessen unser Fenster; alle anderen Tabs (Freunde, Wer, Raid)
 -- laufen unveraendert ueber das Original. Die Taste selbst bleibt frei
@@ -2017,14 +2155,28 @@ function GVE:HookGuildFrame()
     end
     Log("Hook: ToggleFriendsFrame ersetzt")
 
-    -- Falls Ascension zusaetzlich ein Cataclysm-artiges ToggleGuildFrame
-    -- definiert hat (Custom-Client), auch das umleiten.
-    if type(_G["ToggleGuildFrame"]) == "function" then
-        _G["ToggleGuildFrame"] = function()
-            Log("ToggleGuildFrame()")
-            GVE:Toggle()
-        end
-        Log("Hook: ToggleGuildFrame ersetzt")
+    -- GuildStatus_Update() oeffnet beim Speichern direkt FriendsFrame.
+    -- Nur fuer das aus GuildView geoeffnete Popup wird genau dieser eine
+    -- Aufruf unterdrueckt; Blizzards eigentliche Speicherlogik bleibt intakt.
+    local saveButton = _G["GuildControlPopupAcceptButton"]
+    if saveButton and saveButton:GetScript("OnClick") then
+        local originalSaveScript = saveButton:GetScript("OnClick")
+        saveButton:SetScript("OnClick", function(self, ...)
+            local owned = GVE.guildControlOwned
+            local originalStatusUpdate = _G["GuildStatus_Update"]
+            if owned and type(originalStatusUpdate) == "function" then
+                _G["GuildStatus_Update"] = function() end
+            end
+            local ok, err = pcall(originalSaveScript, self, ...)
+            if owned then _G["GuildStatus_Update"] = originalStatusUpdate end
+            if not ok then Log("FEHLER in GuildControlSave: "..tostring(err)) end
+            if owned then
+                GVE.guildControlOwned = nil
+                GuildRoster()
+                if GVE.f then GVE.f:Show() end
+            end
+        end)
+        Log("Hook: GuildControl-Speichern bleibt in GuildView")
     end
 
     -- Gilden-Tab im Social-Fenster: der Klick auf den Tab laeuft NICHT
@@ -2039,6 +2191,12 @@ function GVE:HookGuildFrame()
         Log("Hook: FriendsFrameTab3 ok")
     else
         Log("Hook: FriendsFrameTab3 existiert nicht!")
+    end
+
+    if GuildControlPopupFrame then
+        GuildControlPopupFrame:HookScript("OnHide", function()
+            GVE.guildControlOwned = nil
+        end)
     end
 end
 

@@ -1,0 +1,144 @@
+-- Standalone Lua 5.1-compatible tests for the sync serialization layer.
+_G = _G or {}
+format = string.format
+wipe = function(t) for key in pairs(t) do t[key] = nil end end
+time = function() return 1800000000 end
+GetTime = function() return 100 end
+GetLocale = function() return "deDE" end
+GetGuildInfo = function() return "Test Guild" end
+GetRealmName = function() return "Test Realm" end
+UnitName = function() return "Tester" end
+
+GVE = {
+    GetMembers = function() return {{name="Jaina", online=true}} end,
+    SetRosterListener = function() end,
+}
+
+local eventFrame = {scripts={}}
+function eventFrame:RegisterEvent() end
+function eventFrame:SetScript(name, handler) self.scripts[name] = handler end
+function CreateFrame() return eventFrame end
+
+dofile("Guild-View-Extended-Sync.lua")
+GVE.Sync:InitDB()
+
+local function equal(actual, expected, label)
+    if actual ~= expected then
+        error(label.."\nExpected: "..tostring(expected).."\nActual: "..tostring(actual))
+    end
+end
+
+do
+    local realWotlkLink = "|cffffd000|Htrade:27028:375:375:3111EE:xG{_yK|h[Erste Hilfe]|h|r"
+    local opaqueBitmapLink = "|cffffd000|Htrade:3908:450:450:00000000ABCDEF12:A+:B/_|h[Schneiderei]|h|r"
+    local shortOwnerLink = "|cffffd000|Htrade:2018:43:75:A74B:XEGAAAAAAAIAAAAAIAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwHAA|h[Blacksmithing]|h|r"
+    local source = {
+        professions = {
+            ["Erste Hilfe"] = {
+                skill=375, maxSkill=375, capturedAt=1799999000,
+                tradeLink=realWotlkLink,
+            },
+            ["Schneiderei"] = {
+                skill=450, maxSkill=450, capturedAt=1799999000,
+                tradeLink=opaqueBitmapLink,
+            },
+            ["Blacksmithing"] = {
+                skill=43, maxSkill=75, capturedAt=1799999000,
+                tradeLink=shortOwnerLink,
+            },
+        },
+    }
+    local payload = GVE.Sync:SerializeProfessions(source)
+    local decoded = GVE.Sync:DeserializeProfessions(payload, 1799999000)
+    equal(decoded.professions["Erste Hilfe"].skill, 375, "profession skill")
+    equal(decoded.professions["Erste Hilfe"].tradeLink, realWotlkLink,
+        "real 3.3.5a trade link remains byte-for-byte intact")
+    equal(decoded.professions["Schneiderei"].tradeLink, opaqueBitmapLink,
+        "opaque bitmap including a colon remains intact")
+    equal(decoded.professions["Blacksmithing"].tradeLink, shortOwnerLink,
+        "four-character owner id from a live 3.3.5a server is accepted")
+    equal(decoded.professionsCapturedAt, 1799999000, "profession timestamp")
+end
+
+do
+    local unsafe = "Schmiedekunst~450~450~1799999000~"..
+        "%7Ccffffffff%7CHitem%3A19019%7Ch%5BThunderfury%5D%7Ch%7Cr"
+    equal(GVE.Sync:DeserializeProfessions(unsafe, 1799999000), nil,
+        "non-trade hyperlink rejected")
+end
+
+do
+    local ownLink = "|cffffd000|Htrade:51309:450:450:ABCDEF:xG{_yK|h[Schmiedekunst]|h|r"
+    GetNumSpellTabs = function() return 1 end
+    GetSpellTabInfo = function() return "Berufe", nil, 0, 1 end
+    GetSpellLink = function(slot, bookType)
+        equal(slot, 1, "spellbook slot")
+        equal(bookType, "spell", "3.3.5a spellbook type")
+        return "|cff71d5ff|Hspell:2018|h[Schmiedekunst]|h|r", ownLink
+    end
+    BOOKTYPE_SPELL = "spell"
+    GVE.Sync.own = {}
+    equal(GVE.Sync:CaptureProfession(false), true, "second GetSpellLink return captured")
+    equal(GVE.Sync.own.professions["Schmiedekunst"].tradeLink, ownLink,
+        "spellbook profession link captured unchanged")
+
+    GetNumSpellTabs = function() return 0 end
+    GetTradeSkillListLink = function() return ownLink end
+    IsTradeSkillLinked = function() return true end
+    GVE.Sync.own = {}
+    equal(GVE.Sync:CaptureProfession(false), false, "linked foreign profession rejected")
+    equal(GVE.Sync.own.professions, nil, "foreign link does not become own data")
+end
+
+do
+    local oldLink = "|cffffd000|Htrade:3908:438:450:ABCDEF:xG{_yK|h[Schneiderei]|h|r"
+    GVESyncData = {
+        schema=3,
+        players={jaina={
+            receivedAt=1800000000,
+            reagents={items={[14047]=10}},
+            professions={Schneiderei={
+                name="Schneiderei", skill=438, maxSkill=450,
+                capturedAt=1799999000, tradeLink=oldLink,
+                recipes={{spell=26745, item=21840}}, recipeIndexComplete=true,
+            }},
+        }},
+        ownByCharacter={},
+        settings={shareProfessions=true, shareReagents=true},
+    }
+    GVE.Sync:InitDB()
+    equal(GVESyncData.schema, 4, "schema migrated to profession-only v4")
+    equal(GVESyncData.settings.shareReagents, nil, "obsolete sharing setting removed")
+    equal(GVESyncData.players.jaina.reagents, nil, "obsolete snapshot data removed")
+    equal(GVESyncData.players.jaina.professions.Schneiderei.tradeLink, oldLink,
+        "existing valid profession link retained")
+    equal(GVESyncData.players.jaina.professions.Schneiderei.recipes, nil,
+        "obsolete embedded index removed")
+
+    GVESyncData.players.jaina.professions.Alchemie = {
+        name="Alchemie", skill=450, maxSkill=450, capturedAt=1799999000,
+        tradeLink="|cffffd000|Htrade:51304:450:450:ABCDEF:A+:B/_|h[Alchemie]|h|r",
+    }
+    GVE.GetMembers = function()
+        return {
+            {name="Jaina", rank="Offizier", online=true},
+            {name="Thrall", rank="Mitglied", online=false},
+        }
+    end
+    GVE.Sync.playerSearch = {GetText=function() return "" end}
+    GVE.Sync:BuildPlayerList()
+    local jainaRows, thrallRows = 0, 0
+    for _, row in ipairs(GVE.Sync.playerList) do
+        if row.member and row.member.name == "Jaina" then jainaRows = jainaRows + 1 end
+        if row.member and row.member.name == "Thrall" then thrallRows = thrallRows + 1 end
+    end
+    equal(jainaRows, 2, "player appears once in each profession category")
+    equal(thrallRows, 1, "player without data appears in unsynchronized category")
+
+    GVE.Sync.playerSearch = {GetText=function() return "schnei" end}
+    GVE.Sync:BuildPlayerList()
+    equal(#GVE.Sync.playerList, 2, "profession search returns header and matching player")
+    equal(GVE.Sync.playerList[2].member.name, "Jaina", "profession search result")
+end
+
+print("Guild View Extended sync snapshot tests passed")
