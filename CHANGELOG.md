@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3 - 2026-09-27
+
+- Replaced class atlases with explicit, original 3.3.5a class-motif textures,
+  including `INV_Misc_MonsterClaw_04` for Druid and
+  `Spell_Deathknight_ClassIcon` for Death Knight, so custom atlas layouts can
+  no longer select or crop the wrong class icon.
+- Added timestamp-ordered profession snapshot relays between compatible guild
+  members, allowing newer offline-player data to propagate through multiple
+  online caches without loops or recipe-level merging.
+- Added visible `via Name` provenance for relayed data and retained direct
+  owner snapshots as the authoritative replacement path.
+- Added account-wide sharing of the last self-captured snapshots for offline
+  guild alts while respecting the profession-sharing checkbox.
+
 ## 1.2 - 2026-09-27
 
 - Changed the Social-window redirect so selecting the stock Guild tab opens

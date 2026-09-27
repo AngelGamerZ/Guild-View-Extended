@@ -54,6 +54,7 @@ local L = GetLocale() == "deDE" and {
     closeAll="Alle schließen", onlineCount="%d Spieler · %d online",
     syncActive="Automatische Synchronisierung aktiv", offlineCache="Offline · Cache",
     noResults="Keine passenden Spieler oder Berufe.", requestShort="Anfragen",
+    relayedCurrent="über %s · aktuell", relayedStale="über %s · veraltet",
 } or {
     members="Members", tab="Professions", search="Search player or profession ...",
     professions="Professions", request="Request data",
@@ -84,6 +85,7 @@ local L = GetLocale() == "deDE" and {
     closeAll="Collapse all", onlineCount="%d players · %d online",
     syncActive="Automatic synchronization active", offlineCache="Offline · cache",
     noResults="No matching players or professions.", requestShort="Request",
+    relayedCurrent="via %s · current", relayedStale="via %s · stale",
 }
 
 local function CleanName(value)
@@ -368,6 +370,8 @@ function Sync:InitDB()
         end
         snapshot.professions = next(migrated) and migrated or nil
         snapshot.professionsCapturedAt = oldestAt
+        snapshot.relayFrom = CleanName(snapshot.relayFrom)
+        snapshot.directSource = snapshot.relayFrom and false or true
     end
     -- Spieler, Berufslinks und Freigabeeinstellung bleiben dabei erhalten.
     MigrateSnapshot(db.own)
@@ -399,6 +403,14 @@ function Sync:InitDB()
         if self.autoQueue then wipe(self.autoQueue) end
         if self.autoQueued then wipe(self.autoQueued) end
         if self.autoLastRequest then wipe(self.autoLastRequest) end
+        if self.relayCatalogPending then wipe(self.relayCatalogPending) end
+        if self.relayCatalogCooldown then wipe(self.relayCatalogCooldown) end
+        if self.relayQueue then wipe(self.relayQueue) end
+        if self.relayQueued then wipe(self.relayQueued) end
+        if self.relayPending then wipe(self.relayPending) end
+        if self.relayReceiving then wipe(self.relayReceiving) end
+        if self.relayOwnerPending then wipe(self.relayOwnerPending) end
+        if self.relayIncomingCooldown then wipe(self.relayIncomingCooldown) end
     end
     db.guildKey = guildKey
     local characterKey = guildKey.."\031"..(UnitName("player") or "Unknown")
@@ -435,9 +447,38 @@ function Sync:GetMember(name)
     end
 end
 
+function Sync:GetOwnCharacterSnapshot(name)
+    local wanted = KeyName(name)
+    if not wanted or not self.db or type(self.db.ownByCharacter) ~= "table" then return nil end
+    for characterKey, snapshot in pairs(self.db.ownByCharacter) do
+        local characterName = type(characterKey) == "string" and characterKey:match("([^\031]+)$")
+        if characterName and KeyName(characterName) == wanted and type(snapshot) == "table" then
+            return snapshot, characterName
+        end
+    end
+end
+
 function Sync:GetPlayerData(name)
     if IsOwn(name) then return self.own end
-    return self.db.players[KeyName(name) or ""]
+    local cached = self.db.players[KeyName(name) or ""]
+    local ownAlt = self:GetOwnCharacterSnapshot(name)
+    if ownAlt and (not cached
+    or (tonumber(ownAlt.professionsCapturedAt) or 0) >= (tonumber(cached.professionsCapturedAt) or 0)) then
+        return ownAlt
+    end
+    return cached
+end
+
+function Sync:GetShareableSnapshot(name)
+    local ownerKey = KeyName(name)
+    if not ownerKey then return nil end
+    local cached = self.db.players[ownerKey]
+    local ownAlt = self:GetOwnCharacterSnapshot(name)
+    if ownAlt and (not cached
+    or (tonumber(ownAlt.professionsCapturedAt) or 0) >= (tonumber(cached.professionsCapturedAt) or 0)) then
+        return ownAlt
+    end
+    return cached
 end
 
 ---------------------------------------------------------------------------
@@ -636,6 +677,136 @@ function Sync:QueueControlMessage(message, target, channel)
     return true
 end
 
+local function NewRequestID()
+    return tostring(math.floor(GetTime() * 1000) % 10000000)..tostring(math.random(100, 999))
+end
+
+function Sync:PruneCachedPlayers()
+    local cached = {}
+    for key, value in pairs(self.db.players) do
+        cached[#cached + 1] = {key=key, receivedAt=tonumber(value.receivedAt) or 0}
+    end
+    table.sort(cached, function(a, b) return a.receivedAt < b.receivedAt end)
+    while #cached > MAX_CACHED_PLAYERS do
+        self.db.players[cached[1].key] = nil
+        table.remove(cached, 1)
+    end
+end
+
+function Sync:RequestRelayCatalog(peer, force)
+    local clean, key = CleanName(peer), KeyName(peer)
+    local member = clean and self:GetMember(clean)
+    if not clean or not key or IsOwn(clean) or not member or not member.online then return false end
+    local now = GetTime()
+    if self.relayCatalogPending[key] then return false end
+    if not force and self.relayCatalogCooldown[key]
+    and now - self.relayCatalogCooldown[key] < AUTO_REQUEST_RETRY then return false end
+    local requestID = NewRequestID()
+    self.relayCatalogPending[key] = {requestID=requestID, deadline=now + REQUEST_TIMEOUT}
+    self.relayCatalogCooldown[key] = now
+    if self:QueueControlMessage("C|"..requestID, clean) then return true end
+    self.relayCatalogPending[key] = nil
+    return false
+end
+
+function Sync:SendRelayCatalog(target, requestID)
+    local catalogByOwner = {}
+    local function AddCatalogEntry(owner, entry)
+        owner = CleanName(owner)
+        local ownerKey = KeyName(owner)
+        local stamp = type(entry) == "table" and tonumber(entry.professionsCapturedAt)
+        if owner and ownerKey and stamp and entry.professions and self:IsGuildMember(owner)
+        and IsInteger(stamp, 1, time() + 3600) then
+            local previous = catalogByOwner[ownerKey]
+            if not previous or stamp > previous.stamp then
+                catalogByOwner[ownerKey] = {owner=owner, stamp=stamp}
+            end
+        end
+    end
+    for _, entry in pairs(self.db.players or {}) do
+        -- Auch weitergeleitete Snapshots duerfen erneut angeboten werden.
+        -- Empfaenger akzeptieren sie nur bei strikt neuerem Besitzer-Zeitstempel;
+        -- dadurch laufen identische Daten nicht im Kreis.
+        AddCatalogEntry(type(entry) == "table" and entry.displayName, entry)
+    end
+    -- Accountweite SavedVariables erlauben es, auch eigene derzeit offline
+    -- Twinks mit ihrem letzten selbst erfassten Stand anzubieten.
+    if self.db.settings.shareProfessions then
+        for characterKey, entry in pairs(self.db.ownByCharacter or {}) do
+            local owner = type(characterKey) == "string" and characterKey:match("([^\031]+)$")
+            if not IsOwn(owner) then AddCatalogEntry(owner, entry) end
+        end
+    end
+    local catalog = {}
+    for _, value in pairs(catalogByOwner) do catalog[#catalog + 1] = value end
+    table.sort(catalog, function(a, b) return KeyName(a.owner) < KeyName(b.owner) end)
+    for _, value in ipairs(catalog) do
+        self:QueueMessage("V|"..requestID.."|"..Encode(value.owner).."|"..value.stamp, target)
+    end
+    self:QueueMessage("K|"..requestID, target)
+    DebugLog("Relay-Katalog an "..target..": "..#catalog.." neueste Snapshots")
+end
+
+function Sync:QueueRelayCandidate(peer, owner, advertisedAt)
+    local cleanPeer, cleanOwner = CleanName(peer), CleanName(owner)
+    local peerKey, ownerKey = KeyName(cleanPeer), KeyName(cleanOwner)
+    local stamp = tonumber(advertisedAt)
+    if not cleanPeer or not cleanOwner or not peerKey or not ownerKey
+    or peerKey == ownerKey or IsOwn(cleanOwner) or not self:IsGuildMember(cleanOwner)
+    or not IsInteger(stamp, 1, time() + 3600) then return false end
+    -- Vergleiche gegen den besten lokal bekannten Stand. Dazu gehoeren auch
+    -- eigene, derzeit offline gespielte Charaktere aus den SavedVariables.
+    local cached = self:GetPlayerData(cleanOwner)
+    if cached and (tonumber(cached.professionsCapturedAt) or 0) >= stamp then return false end
+    if self.relayOwnerPending[ownerKey] then return false end
+    local queued = self.relayQueued[ownerKey]
+    if queued then
+        if stamp > queued.stamp then queued.peer, queued.stamp = cleanPeer, stamp end
+        return true
+    end
+    local candidate = {peer=cleanPeer, owner=cleanOwner, ownerKey=ownerKey, stamp=stamp}
+    self.relayQueued[ownerKey] = candidate
+    self.relayQueue[#self.relayQueue + 1] = candidate
+    return true
+end
+
+function Sync:RequestRelayedSnapshot(candidate)
+    if type(candidate) ~= "table" then return false end
+    local cached = self:GetPlayerData(candidate.owner)
+    if cached and (tonumber(cached.professionsCapturedAt) or 0) >= candidate.stamp then return false end
+    local requestID = NewRequestID()
+    local peerKey = KeyName(candidate.peer)
+    local transferKey = peerKey.."|"..requestID
+    self.relayPending[transferKey] = {
+        requestID=requestID, peer=candidate.peer, owner=candidate.owner,
+        ownerKey=candidate.ownerKey, advertisedAt=candidate.stamp,
+        started=GetTime(), deadline=GetTime() + ABSOLUTE_TRANSFER_TIMEOUT,
+    }
+    self.relayOwnerPending[candidate.ownerKey] = transferKey
+    SendAddonMessage(PREFIX, "R|"..requestID.."|"..Encode(candidate.owner), "WHISPER", candidate.peer)
+    return true
+end
+
+function Sync:SendRelayedSnapshot(target, requestID, owner)
+    local entry = self:GetShareableSnapshot(owner)
+    local ownAlt = self:GetOwnCharacterSnapshot(owner)
+    if entry == ownAlt and not self.db.settings.shareProfessions then return false end
+    if not entry or not entry.professions or not self:IsGuildMember(owner) then return false end
+    local payload = self:SerializeProfessions(entry)
+    if not payload or payload == "" or #payload > MAX_BYTES then return false end
+    local chunks = math.ceil(#payload / CHUNK_BYTES)
+    if chunks < 1 or chunks > MAX_CHUNKS or #self.sendQueue + chunks + 2 > MAX_CHUNKS * 2 then return false end
+    local capturedAt = tonumber(entry.professionsCapturedAt)
+    if not IsInteger(capturedAt, 1, time() + 3600) then return false end
+    self:QueueMessage("RB|"..requestID.."|"..Encode(owner).."|"..capturedAt.."|"..chunks, target)
+    for index = 1, chunks do
+        self:QueueMessage("RD|"..requestID.."|"..index.."|"..payload:sub((index - 1) * CHUNK_BYTES + 1, index * CHUNK_BYTES), target)
+    end
+    self:QueueMessage("RE|"..requestID, target)
+    DebugLog("Relay-Snapshot "..owner.." an "..target.." gesendet")
+    return true
+end
+
 function Sync:Announce(command, target)
     if not target and type(IsInGuild) == "function" and not IsInGuild() then return false end
     if command ~= "H" then
@@ -692,6 +863,8 @@ function Sync:ManualBroadcastSync()
     -- entdeckte kompatible Clients antworten koennen.
     wipe(self.autoQueue)
     wipe(self.autoQueued)
+    wipe(self.relayQueue)
+    wipe(self.relayQueued)
     local directRequests = 0
     for _, member in ipairs(GVE:GetMembers() or {}) do
         if member.online and not IsOwn(member.name) then
@@ -700,8 +873,10 @@ function Sync:ManualBroadcastSync()
                 self.pending[memberKey] = nil
                 self.receiving[memberKey] = nil
                 self.viewMessages[memberKey] = nil
+                self.relayCatalogPending[memberKey] = nil
             end
             if self:QueueAutoRequest(member.name, 0, true) then directRequests = directRequests + 1 end
+            self:RequestRelayCatalog(member.name, true)
         end
     end
     self:Announce("H")
@@ -768,7 +943,7 @@ function Sync:Request(name, automatic, force)
     if not force and self.cooldowns[key] and now - self.cooldowns[key] < REQUEST_COOLDOWN then return end
     self.cooldowns[key] = now
     if automatic then self.autoLastRequest[key] = now end
-    local requestID = tostring(math.floor(now * 1000) % 10000000)..tostring(math.random(100, 999))
+    local requestID = NewRequestID()
     self.pending[key] = {
         started=now, lastActivity=now, deadline=now + ABSOLUTE_TRANSFER_TIMEOUT,
         requestID=requestID, requireFresh=force and true or false,
@@ -794,12 +969,103 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
         if command == "H" and channel == "GUILD" then
             self:Announce("A", cleanSender)
             if advertisedAt > 0 then self:QueueAutoRequest(cleanSender, advertisedAt) end
+            self:RequestRelayCatalog(cleanSender, false)
         elseif command == "U" and channel == "GUILD" then
             self:QueueAutoRequest(cleanSender, advertisedAt)
         elseif command == "A" and channel == "WHISPER" then
             local force = self.forceDiscoveryUntil and GetTime() <= self.forceDiscoveryUntil
             self:QueueAutoRequest(cleanSender, advertisedAt, force and true or false)
+            self:RequestRelayCatalog(cleanSender, force and true or false)
         end
+        return
+    end
+
+    local senderKey = KeyName(cleanSender)
+    if command == "C" and channel == "WHISPER" then
+        if #fields ~= 2 or not requestID or not requestID:match("^%d+$") then return end
+        self:SendRelayCatalog(cleanSender, requestID)
+        return
+    elseif command == "V" and channel == "WHISPER" then
+        if #fields ~= 4 then return end
+        local catalog = self.relayCatalogPending[senderKey]
+        if not catalog or catalog.requestID ~= requestID then return end
+        self:QueueRelayCandidate(cleanSender, Decode(fields[3] or ""), tonumber(fields[4]))
+        return
+    elseif command == "K" and channel == "WHISPER" then
+        if #fields ~= 2 then return end
+        local catalog = self.relayCatalogPending[senderKey]
+        if catalog and catalog.requestID == requestID then self.relayCatalogPending[senderKey] = nil end
+        return
+    elseif command == "R" and channel == "WHISPER" then
+        if #fields ~= 3 or not requestID or not requestID:match("^%d+$") then return end
+        local owner = CleanName(Decode(fields[3] or ""))
+        local relayCooldownKey = senderKey.."|"..tostring(KeyName(owner) or "")
+        local now = GetTime()
+        if owner and KeyName(owner) ~= senderKey
+        and (not self.relayIncomingCooldown[relayCooldownKey]
+            or now - self.relayIncomingCooldown[relayCooldownKey] >= REQUEST_COOLDOWN) then
+            self.relayIncomingCooldown[relayCooldownKey] = now
+            self:SendRelayedSnapshot(cleanSender, requestID, owner)
+        end
+        return
+    elseif command == "RB" and channel == "WHISPER" then
+        if #fields ~= 5 then return end
+        local transferKey = senderKey.."|"..tostring(requestID or "")
+        local pending = self.relayPending[transferKey]
+        local owner = CleanName(Decode(fields[3] or ""))
+        local capturedAt, chunks = tonumber(fields[4]), tonumber(fields[5])
+        if not pending or not owner or KeyName(owner) ~= pending.ownerKey
+        or not IsInteger(capturedAt, 1, time() + 3600)
+        or not IsInteger(chunks, 1, MAX_CHUNKS) then return end
+        pending.lastActivity = GetTime()
+        self.relayReceiving[transferKey] = {
+            requestID=requestID, owner=owner, capturedAt=capturedAt,
+            chunks=chunks, parts={}, bytes=0,
+        }
+        return
+    elseif command == "RD" and channel == "WHISPER" then
+        if #fields ~= 4 then return end
+        local transferKey = senderKey.."|"..tostring(requestID or "")
+        local pending, transfer = self.relayPending[transferKey], self.relayReceiving[transferKey]
+        local index, part = tonumber(fields[3]), fields[4] or ""
+        if not pending or not transfer or not IsInteger(index, 1, transfer.chunks) or #part > CHUNK_BYTES then return end
+        pending.lastActivity = GetTime()
+        if not transfer.parts[index] then
+            transfer.bytes = transfer.bytes + #part
+            if transfer.bytes > MAX_BYTES then self.relayReceiving[transferKey] = nil return end
+            transfer.parts[index] = part
+        end
+        return
+    elseif command == "RE" and channel == "WHISPER" then
+        if #fields ~= 2 then return end
+        local transferKey = senderKey.."|"..tostring(requestID or "")
+        local pending, transfer = self.relayPending[transferKey], self.relayReceiving[transferKey]
+        if not pending or not transfer then return end
+        local complete = {}
+        for index = 1, transfer.chunks do
+            if transfer.parts[index] == nil then return end
+            complete[index] = transfer.parts[index]
+        end
+        local decoded = self:DeserializeProfessions(table.concat(complete), transfer.capturedAt)
+        self.relayReceiving[transferKey] = nil
+        self.relayPending[transferKey] = nil
+        if self.relayOwnerPending[pending.ownerKey] == transferKey then self.relayOwnerPending[pending.ownerKey] = nil end
+        if not decoded
+        or (tonumber(decoded.professionsCapturedAt) or 0) ~= transfer.capturedAt
+        or transfer.capturedAt < (tonumber(pending.advertisedAt) or 0) then return end
+        local existing = self:GetPlayerData(pending.owner)
+        if existing and (tonumber(existing.professionsCapturedAt) or 0) >= (tonumber(decoded.professionsCapturedAt) or 0) then return end
+        self.db.players[pending.ownerKey] = {
+            displayName=pending.owner,
+            professions=decoded.professions,
+            professionsCapturedAt=decoded.professionsCapturedAt,
+            receivedAt=time(), relayFrom=cleanSender, directSource=false,
+        }
+        self.viewMessages[pending.ownerKey] = nil
+        self:PruneCachedPlayers()
+        DebugLog("Neuer Relay-Snapshot für "..pending.owner.." über "..cleanSender
+            .." übernommen: "..tostring(decoded.professionsCapturedAt))
+        self:RefreshUI()
         return
     end
 
@@ -807,7 +1073,6 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
 
     if command == "Q" and channel == "WHISPER" then
         if #fields ~= 2 then return end
-        local senderKey = KeyName(cleanSender)
         local now = GetTime()
         if self.incomingCooldown[senderKey] and now - self.incomingCooldown[senderKey] < 30 then return end
         self.incomingCooldown[senderKey] = now
@@ -864,20 +1129,22 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
             return
         end
         local playerKey = KeyName(cleanSender)
+        local existing = self.db.players[playerKey]
+        if existing and (tonumber(existing.professionsCapturedAt) or 0) > (tonumber(decoded.professionsCapturedAt) or 0) then
+            self.viewMessages[pendingKey] = nil
+            self:RefreshUI()
+            return
+        end
         local entry = self.db.players[playerKey] or {displayName=cleanSender}
         entry.professions = decoded.professions
         entry.professionsCapturedAt = decoded.professionsCapturedAt
         entry.displayName = cleanSender
         entry.receivedAt = time()
+        entry.relayFrom = nil
+        entry.directSource = true
         self.db.players[playerKey] = entry
         self.autoLastRequest[pendingKey] = nil
-        local cached = {}
-        for key, value in pairs(self.db.players) do cached[#cached + 1] = {key=key, receivedAt=tonumber(value.receivedAt) or 0} end
-        table.sort(cached, function(a, b) return a.receivedAt < b.receivedAt end)
-        while #cached > MAX_CACHED_PLAYERS do
-            self.db.players[cached[1].key] = nil
-            table.remove(cached, 1)
-        end
+        self:PruneCachedPlayers()
         if pending.requireFresh
         and (tonumber(decoded.professionsCapturedAt) or 0) < (tonumber(pending.requestedAt) or 0) - 60 then
             self.viewMessages[pendingKey] = L.staleReply
@@ -916,7 +1183,7 @@ function Sync:BuildPlayerList()
         return onlineFilter == "all" or onlineFilter == "online" and member.online
             or onlineFilter == "offline" and not member.online
     end
-    local function Add(categoryKey, categoryName, member, profession, spellID, order, countSynchronized)
+    local function Add(categoryKey, categoryName, member, profession, spellID, order, countSynchronized, relayFrom)
         if not MemberAllowed(member) then return end
         if profession then
             local stale = ProfessionIsStale(profession)
@@ -935,7 +1202,10 @@ function Sync:BuildPlayerList()
         local memberKey = KeyName(member.name)
         if memberKey and not category.memberKeys[memberKey] then
             category.memberKeys[memberKey] = true
-            category.members[#category.members + 1] = {member=member, profession=profession, professionName=categoryName}
+            category.members[#category.members + 1] = {
+                member=member, profession=profession,
+                professionName=categoryName, relayFrom=relayFrom,
+            }
             if member.online then category.onlineCount = category.onlineCount + 1 end
             if countSynchronized ~= false then synchronized[memberKey] = true end
         end
@@ -953,7 +1223,7 @@ function Sync:BuildPlayerList()
                     local professionMatch = ContainsFolded(professionName, needle)
                     if memberMatch or professionMatch then
                         local categoryKey, spellID = ProfessionCategoryKey(professionName, profession)
-                        Add(categoryKey, professionName, member, profession, spellID, 1, true)
+                        Add(categoryKey, professionName, member, profession, spellID, 1, true, data.relayFrom)
                     end
                 end
             end
@@ -1098,6 +1368,11 @@ function Sync:RefreshPlayers()
                 if message then
                     row.status:SetText(message)
                     row.status:SetTextColor(UI_COLOR.borderFocus[1], UI_COLOR.borderFocus[2], UI_COLOR.borderFocus[3])
+                elseif entry.relayFrom then
+                    local stale = ProfessionIsStale(entry.profession)
+                    row.status:SetText(format(stale and L.relayedStale or L.relayedCurrent, entry.relayFrom))
+                    local color = stale and UI_COLOR.warn or UI_COLOR.borderFocus
+                    row.status:SetTextColor(color[1], color[2], color[3])
                 elseif not member.online then
                     row.status:SetText(L.offlineCache)
                     row.status:SetTextColor(UI_COLOR.muted[1], UI_COLOR.muted[2], UI_COLOR.muted[3])
@@ -1380,6 +1655,14 @@ Sync.viewMessages = {}
 Sync.autoQueue = {}
 Sync.autoQueued = {}
 Sync.autoLastRequest = {}
+Sync.relayCatalogPending = {}
+Sync.relayCatalogCooldown = {}
+Sync.relayQueue = {}
+Sync.relayQueued = {}
+Sync.relayPending = {}
+Sync.relayReceiving = {}
+Sync.relayOwnerPending = {}
+Sync.relayIncomingCooldown = {}
 Sync.elapsed = 0
 Sync.autoElapsed = 0
 
@@ -1467,6 +1750,13 @@ eventFrame:SetScript("OnUpdate", function(self, elapsed)
             Sync.autoQueued[request.key] = nil
             Sync:Request(request.name, true, request.force)
         end
+    elseif Sync.autoElapsed >= AUTO_REQUEST_INTERVAL and #Sync.relayQueue > 0 then
+        Sync.autoElapsed = 0
+        local candidate = table.remove(Sync.relayQueue, 1)
+        if candidate then
+            Sync.relayQueued[candidate.ownerKey] = nil
+            Sync:RequestRelayedSnapshot(candidate)
+        end
     end
     if Sync.elapsed < SEND_INTERVAL then return end
     Sync.elapsed = 0
@@ -1479,6 +1769,19 @@ eventFrame:SetScript("OnUpdate", function(self, elapsed)
             Sync.receiving[key] = nil
             Sync.viewMessages[key] = L.timeout
             Sync:RefreshUI()
+        end
+    end
+    for key, request in pairs(Sync.relayCatalogPending) do
+        if now > (request.deadline or 0) then Sync.relayCatalogPending[key] = nil end
+    end
+    for transferKey, request in pairs(Sync.relayPending) do
+        if now > (request.deadline or 0)
+        or now - (request.lastActivity or request.started) > REQUEST_TIMEOUT then
+            Sync.relayPending[transferKey] = nil
+            Sync.relayReceiving[transferKey] = nil
+            if Sync.relayOwnerPending[request.ownerKey] == transferKey then
+                Sync.relayOwnerPending[request.ownerKey] = nil
+            end
         end
     end
 end)

@@ -23,7 +23,7 @@ Guild-View-Extended replaces the basic guild view with an expanded interface for
 
 ## Screenshots
 
-The screenshots below are deterministic renders of the actual version 1.2
+The screenshots below are deterministic renders of the actual version 1.3
 layout using example guild, player, and profession data. They do not show real
 guild data.
 
@@ -105,7 +105,7 @@ Changing a search or time filter returns the list to its first row. Escape
 closes the window even while the search field has keyboard focus. Opening the
 window requests fresh roster data, including offline members.
 
-Version 1.2 identifies itself in the addon list and in the login chat message.
+Version 1.3 identifies itself in the addon list and in the login chat message.
 If the message still shows an older version (or no version), the game is loading
 a different addon copy. Install the current release ZIP into the active
 client's `Interface/AddOns/` directory and use `/reload` before testing.
@@ -164,14 +164,25 @@ This is a request-based snapshot system:
   profession contents.
 - `GetTradeSkillListLink()` remains a guarded fallback while the player's own
   profession window is open.
-- Fresh requests require the target player to be online and running a
-  compatible Guild-View-Extended version. Offline players show the last cache.
+- Direct fresh requests use the online owner when available. Compatible peers
+  also exchange catalogs of their newest cached guild snapshots, so a newer
+  offline-player snapshot can propagate through several online guild members.
+- Relays retain the original owner's capture timestamp and the complete trade
+  link. A snapshot is accepted only when that owner timestamp is strictly newer
+  than the local copy; equal or older copies stop automatically and cannot loop.
+- Relayed entries show the last forwarding player as `via Name`. A later direct
+  owner response replaces the relayed copy when it is at least as recent.
+- Account-wide SavedVariables keep each own character separately. Consequently,
+  an online main character can advertise the last self-captured snapshot of an
+  offline guild alt, provided profession sharing remains enabled.
 - Compatible clients discover each other automatically after login. Requests
   are queued and rate-limited, and a changed profession link triggers a fresh
   synchronization without requiring a click. **Request data** remains available
   as a manual refresh action.
 - Only validated profession links, skill values, and snapshot times are
   transferred. Guild notes and unrelated character data are not.
+- Individual recipes are never merged. The validated, internally consistent
+  profession hyperlink always moves as one complete snapshot.
 - Profession sharing is enabled by default and can be disabled with the
   checkbox at the bottom of the tab.
 

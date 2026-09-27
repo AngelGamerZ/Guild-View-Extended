@@ -188,8 +188,15 @@ do
     equal(GVE.Sync.own.professionsCapturedAt, 1800000000, "unchanged snapshot receives fresh confirmation time")
     wipe(GVE.Sync.sendQueue)
     equal(GVE.Sync:ManualBroadcastSync(), true, "manual guild synchronization starts")
-    equal(GVE.Sync.sendQueue[1].message, "U|1800000000", "manual synchronization pushes own snapshot")
-    equal(GVE.Sync.sendQueue[2].message, "H|1800000000", "manual synchronization broadcasts discovery request")
+    local foundUpdate, foundDiscovery, foundCatalog = false, false, false
+    for _, packet in ipairs(GVE.Sync.sendQueue) do
+        if packet.message == "U|1800000000" then foundUpdate = true end
+        if packet.message == "H|1800000000" then foundDiscovery = true end
+        if packet.message:find("^C|%d+$") then foundCatalog = true end
+    end
+    equal(foundUpdate, true, "manual synchronization pushes own snapshot")
+    equal(foundDiscovery, true, "manual synchronization broadcasts discovery request")
+    equal(foundCatalog, true, "manual synchronization requests peer relay catalogs")
     equal(#GVE.Sync.autoQueue, 1, "manual synchronization directly queues online guild members")
     equal(GVE.Sync.autoQueue[1].force, true, "manual synchronization bypasses cached timestamps")
 
@@ -209,6 +216,101 @@ do
     equal(sent[1].channel, "WHISPER", "automatic snapshot request uses whisper")
     equal(sent[1].target, "Jaina", "automatic request is sent to discovered member")
     equal(sent[2].channel, "GUILD", "queued discovery announcement is sent to guild")
+end
+
+do
+    local oldLink = "|cffffd000|Htrade:3908:151:300:ABCDEF:OLD|h[Tailoring]|h|r"
+    local newLink = "|cffffd000|Htrade:3908:300:300:ABCDEF:NEW|h[Tailoring]|h|r"
+    local newSnapshot = {
+        professionsCapturedAt=1800000000,
+        professions={Tailoring={
+            name="Tailoring", skill=300, maxSkill=300,
+            capturedAt=1800000000, tradeLink=newLink,
+        }},
+    }
+    GVE.GetMembers = function()
+        return {
+            {name="Tester", online=true},
+            {name="Astera", online=false},
+            {name="Konrat", online=true},
+            {name="Muri", online=true},
+            {name="Twinka", online=false},
+        }
+    end
+    GVE.Sync.db.players = {
+        astera={
+            displayName="Astera", receivedAt=1799999900,
+            professionsCapturedAt=1799999000, directSource=true,
+            professions={Tailoring={
+                name="Tailoring", skill=151, maxSkill=300,
+                capturedAt=1799999000, tradeLink=oldLink,
+            }},
+        },
+    }
+    GVE.Sync.db.ownByCharacter["Realm\031Guild\031Twinka"] = {
+        professionsCapturedAt=1799999500, receivedAt=1799999500,
+        professions={Tailoring={
+            name="Tailoring", skill=225, maxSkill=300,
+            capturedAt=1799999500,
+            tradeLink="|cffffd000|Htrade:3908:225:300:ABCDEF:TWINK|h[Tailoring]|h|r",
+        }},
+    }
+
+    wipe(GVE.Sync.sendQueue)
+    GVE.Sync:SendRelayCatalog("Konrat", "700")
+    local foundAstera, foundTwink = false, false
+    for _, packet in ipairs(GVE.Sync.sendQueue) do
+        if packet.message == "V|700|Astera|1799999000" then foundAstera = true end
+        if packet.message == "V|700|Twinka|1799999500" then foundTwink = true end
+    end
+    equal(foundAstera, true, "relay catalog advertises directly cached offline player")
+    equal(foundTwink, true, "relay catalog advertises account-wide offline twink")
+    equal(GVE.Sync:QueueRelayCandidate("Konrat", "Twinka", 1799999400), false,
+        "older relay cannot replace a newer account-wide offline twink snapshot")
+
+    wipe(GVE.Sync.relayQueue)
+    wipe(GVE.Sync.relayQueued)
+    wipe(GVE.Sync.relayPending)
+    wipe(GVE.Sync.relayReceiving)
+    wipe(GVE.Sync.relayOwnerPending)
+    GVE.Sync.relayCatalogPending.konrat = {requestID="701", deadline=200}
+    GVE.Sync:OnAddonMessage("GVEX4", "V|701|Astera|1800000000", "WHISPER", "Konrat")
+    equal(#GVE.Sync.relayQueue, 1, "newer relayed owner snapshot is queued")
+    local candidate = table.remove(GVE.Sync.relayQueue, 1)
+    GVE.Sync.relayQueued[candidate.ownerKey] = nil
+
+    local sent = {}
+    SendAddonMessage = function(prefix, message, channel, target)
+        sent[#sent + 1] = {prefix=prefix, message=message, channel=channel, target=target}
+    end
+    equal(GVE.Sync:RequestRelayedSnapshot(candidate), true, "relay snapshot request starts")
+    local requestID = sent[#sent].message:match("^R|(%d+)|Astera$")
+    if not requestID then error("relay request packet missing owner") end
+
+    local payload = GVE.Sync:SerializeProfessions(newSnapshot)
+    local chunks = math.ceil(#payload / 175)
+    GVE.Sync:OnAddonMessage("GVEX4",
+        "RB|"..requestID.."|Astera|1800000000|"..chunks, "WHISPER", "Konrat")
+    for index = 1, chunks do
+        local part = payload:sub((index - 1) * 175 + 1, index * 175)
+        GVE.Sync:OnAddonMessage("GVEX4",
+            "RD|"..requestID.."|"..index.."|"..part, "WHISPER", "Konrat")
+    end
+    GVE.Sync:OnAddonMessage("GVEX4", "RE|"..requestID, "WHISPER", "Konrat")
+    equal(GVE.Sync.db.players.astera.professions.Tailoring.skill, 300,
+        "newer relayed profession replaces older cache")
+    equal(GVE.Sync.db.players.astera.relayFrom, "Konrat",
+        "last relay source is retained for UI provenance")
+
+    wipe(GVE.Sync.sendQueue)
+    GVE.Sync:SendRelayCatalog("Muri", "702")
+    foundAstera = false
+    for _, packet in ipairs(GVE.Sync.sendQueue) do
+        if packet.message == "V|702|Astera|1800000000" then foundAstera = true end
+    end
+    equal(foundAstera, true, "relayed snapshot can propagate while prior relay is offline")
+    equal(GVE.Sync:QueueRelayCandidate("Muri", "Astera", 1800000000), false,
+        "equal timestamp stops relay loops")
 end
 
 print("Guild View Extended sync snapshot tests passed")

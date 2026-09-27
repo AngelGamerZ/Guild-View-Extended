@@ -386,43 +386,44 @@ local function AddButtonIcon(button, texturePath)
     return icon
 end
 
--- Originale 3.3.5a-Battleground-Klassenicons. Diese Textur und exakt diese
--- Koordinaten verwendet Blizzards WorldStateFrame in Build 12340.
-local CLASS_ICON_COORDS_335 = {
-    WARRIOR     = {0, 0.25,       0,    0.25},
-    MAGE        = {0.25, 0.49609375, 0,    0.25},
-    ROGUE       = {0.49609375, 0.7421875, 0, 0.25},
-    DRUID       = {0.7421875, 0.98828125, 0, 0.25},
-    HUNTER      = {0, 0.25,       0.25, 0.5},
-    SHAMAN      = {0.25, 0.49609375, 0.25, 0.5},
-    PRIEST      = {0.49609375, 0.7421875, 0.25, 0.5},
-    WARLOCK     = {0.7421875, 0.98828125, 0.25, 0.5},
-    PALADIN     = {0, 0.25,       0.5,  0.75},
-    DEATHKNIGHT = {0.25, 0.49609375, 0.5, 0.75},
+-- Die urspruenglichen, einzeln vorhandenen Klassenmotive des 3.3.5a-Clients.
+-- Bewusst kein Atlas: angepasste Clients koennen dessen Inhalt oder globale
+-- Koordinatentabellen ersetzen und dadurch alle Klassen falsch darstellen.
+local CLASS_ICON_TEXTURES_335 = {
+    WARRIOR     = "Interface\\Icons\\INV_Sword_27",
+    PALADIN     = "Interface\\Icons\\INV_Hammer_01",
+    HUNTER      = "Interface\\Icons\\INV_Weapon_Bow_07",
+    ROGUE       = "Interface\\Icons\\INV_ThrowingKnife_04",
+    PRIEST      = "Interface\\Icons\\INV_Staff_30",
+    DEATHKNIGHT = "Interface\\Icons\\Spell_Deathknight_ClassIcon",
+    SHAMAN      = "Interface\\Icons\\INV_Jewelry_Talisman_04",
+    MAGE        = "Interface\\Icons\\INV_Staff_13",
+    WARLOCK     = "Interface\\Icons\\Spell_Nature_Drowsy",
+    DRUID       = "Interface\\Icons\\INV_Misc_MonsterClaw_04",
 }
 
 local function ResolveClassToken(classKey)
-    local raw = tostring(classKey or "")
+    local raw = tostring(classKey or ""):gsub("^%s+", ""):gsub("%s+$", "")
     local token = raw:upper():gsub("[%s_%-]", "")
-    if CLASS_ICON_COORDS_335[token] then return token end
+    if CLASS_ICON_TEXTURES_335[token] then return token end
     for english, localized in pairs(LOCALIZED_CLASS_NAMES_MALE or {}) do
-        if localized == raw then return english:upper():gsub("[%s_%-]", "") end
+        if tostring(localized or ""):lower() == raw:lower() then
+            return english:upper():gsub("[%s_%-]", "")
+        end
     end
     for english, localized in pairs(LOCALIZED_CLASS_NAMES_FEMALE or {}) do
-        if localized == raw then return english:upper():gsub("[%s_%-]", "") end
+        if tostring(localized or ""):lower() == raw:lower() then
+            return english:upper():gsub("[%s_%-]", "")
+        end
     end
     return token
 end
 
 local function SetClassIcon(texture, classKey, online)
-    texture:SetTexture("Interface\\WorldStateFrame\\Icons-Classes")
-    local coords = CLASS_ICON_COORDS_335[ResolveClassToken(classKey)]
-    if coords then
-        texture:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
-    else
-        texture:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
-        texture:SetTexCoord(0, 1, 0, 1)
-    end
+    local token = ResolveClassToken(classKey)
+    texture:SetTexture(CLASS_ICON_TEXTURES_335[token]
+        or "Interface\\Icons\\INV_Misc_QuestionMark")
+    texture:SetTexCoord(0, 1, 0, 1)
     texture:SetVertexColor(1, 1, 1)
     texture:SetAlpha(online and 1 or 0.42)
 end
@@ -483,7 +484,18 @@ function GVE:LoadRoster()
             -- Bei fehlender Lokalisierung auf den classFile-Token
             -- zurueckfallen (und umgekehrt).
             local disp = (class and class ~= "" and class) or cf or ""
-            local key  = (cf and cf ~= "" and cf) or disp
+            local displayToken = ResolveClassToken(disp)
+            local fileToken = ResolveClassToken(cf)
+            -- Der kanonische classFile-Token ist in 3.3.5a die Primaerquelle;
+            -- der lokalisierte Anzeigename bleibt ein unabhaengiger Fallback.
+            local key
+            if CLASS_ICON_TEXTURES_335[fileToken] then
+                key = fileToken
+            elseif CLASS_ICON_TEXTURES_335[displayToken] then
+                key = displayToken
+            else
+                key = (cf and cf ~= "" and cf) or disp
+            end
 
             -- Zuletzt online (in Stunden) + Kurztext
             local lastH, lastText
