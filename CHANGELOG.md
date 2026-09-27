@@ -2,6 +2,8 @@
 
 ## 1.1 - 2026-09-27
 
+- Added peer-based version discovery with one-time chat notifications, a
+  GuildView quest marker, and a copyable official GitHub Releases URL.
 - Fixed reopening Guild-View-Extended through `O` after the stock Guild tab
   had previously redirected to and closed the addon window.
 - Added **Sync guild now**, which refreshes the local profession snapshot,

@@ -6,4 +6,5 @@
 ## SavedVariables: GVEConfig, GVESyncData
 
 Guild-View-Extended.lua
+Guild-View-Extended-Version.lua
 Guild-View-Extended-Sync.lua

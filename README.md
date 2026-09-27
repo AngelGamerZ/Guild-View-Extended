@@ -18,6 +18,8 @@ Guild-View-Extended replaces the basic guild view with an expanded interface for
 - Open the Guild Log on demand from the member toolbar
 - Open synchronized, clickable profession links grouped by profession
 - Synchronize profession changes automatically between compatible online guild members
+- Detect newer Guild-View-Extended versions from other addon users and show a
+  chat notice plus an in-window quest marker with a copyable GitHub release URL
 
 ## Screenshots
 
@@ -43,6 +45,19 @@ guild data.
 - World of Warcraft client version 3.3.5a
 - Interface version `30300`
 - A guild membership for roster features
+
+## Version notifications
+
+Guild-View-Extended checks versions through other addon users because a WoW
+3.3.5a addon cannot query GitHub over HTTP. It announces its installed version
+to compatible guild members and uses a filtered, rate-limited player-created
+version channel to discover newer releases from other users on the realm.
+
+When a higher version is detected, the notice appears once in chat and a yellow
+quest marker appears beside the close button in GuildView. Clicking the marker
+opens an Escape-closeable window containing the official GitHub Releases URL,
+already selected for copying with `Ctrl+C`. The addon never attempts to open a
+browser or write to the clipboard automatically.
 
 ## Installation
 
