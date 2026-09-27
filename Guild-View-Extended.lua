@@ -2338,19 +2338,37 @@ function GVE:Toggle()
 end
 
 -- Blizzards 3.3.5a-Guild-Keybind (TOGGLEGUILDTAB) ruft
--- ToggleFriendsFrame(3) auf --
--- Tab 3 = Gilde im Social-Fenster. Wir fangen genau diesen Aufruf ab und
--- oeffnen stattdessen unser Fenster; alle anderen Tabs (Freunde, Wer, Raid)
--- laufen unveraendert ueber das Original. Die Taste selbst bleibt frei
--- konfigurierbar, weil wir nur die Zielfunktion umleiten.
+-- ToggleFriendsFrame(3) auf. TOGGLESOCIAL (Standard: O) ruft die Funktion
+-- dagegen ohne Argument auf und verwendet den zuletzt gewaehlten Tab. Darum
+-- muessen sowohl der explizite Tab 3 als auch ein gespeicherter Guild-Tab
+-- umgeleitet werden.
+function GVE:IsGuildSocialRequest(tab)
+    if tab == 3 then return true end
+    if tab ~= nil then return false end
+    return self.guildSocialSelected == true
+        or FriendsFrame and tonumber(FriendsFrame.selectedTab) == 3
+end
+
+function GVE:HideBlizzardGuildFrame()
+    -- GuildFrame vorsorglich separat verstecken. Je nach Aufrufreihenfolge
+    -- kann es bereits eingeblendet worden sein, obwohl FriendsFrame erst im
+    -- selben UI-Zyklus sichtbar wird.
+    if GuildFrame and GuildFrame.Hide then GuildFrame:Hide() end
+    if FriendsFrame and FriendsFrame:IsShown() then HideUIPanel(FriendsFrame) end
+end
+
 function GVE:HookGuildFrame()
     local orig = ToggleFriendsFrame
     _G["ToggleFriendsFrame"] = function(tab)
-        Log("ToggleFriendsFrame("..tostring(tab)..")")
-        if tab == 3 then
+        local selectedTab = FriendsFrame and FriendsFrame.selectedTab
+        Log("ToggleFriendsFrame("..tostring(tab).."), selectedTab="..tostring(selectedTab))
+        if GVE:IsGuildSocialRequest(tab) then
+            GVE.guildSocialSelected = true
+            GVE:HideBlizzardGuildFrame()
             GVE:Toggle()
             return
         end
+        if tab ~= nil then GVE.guildSocialSelected = nil end
         return orig(tab)
     end
     Log("Hook: ToggleFriendsFrame ersetzt")
@@ -2385,12 +2403,39 @@ function GVE:HookGuildFrame()
     if FriendsFrameTab3 then
         FriendsFrameTab3:HookScript("OnClick", function()
             Log("FriendsFrameTab3 geklickt")
-            if FriendsFrame then HideUIPanel(FriendsFrame) end
+            GVE.guildSocialSelected = true
+            GVE:HideBlizzardGuildFrame()
             GVE:Open()
         end)
         Log("Hook: FriendsFrameTab3 ok")
     else
         Log("Hook: FriendsFrameTab3 existiert nicht!")
+    end
+
+    -- Einige 3.3.5a-Clients setzen FriendsFrame.selectedTab beim Verstecken
+    -- zurueck. Darum pflegen wir die letzte Nicht-Gilden-Auswahl zusaetzlich
+    -- ueber die sichtbaren Social-Tabs selbst.
+    for _, tabIndex in ipairs({1, 2, 4}) do
+        local socialTab = _G["FriendsFrameTab"..tabIndex]
+        if socialTab and socialTab.HookScript then
+            socialTab:HookScript("OnClick", function()
+                GVE.guildSocialSelected = nil
+            end)
+        end
+    end
+
+    -- Sicherheitsnetz fuer Addons oder Blizzard-Code, die FriendsFrame direkt
+    -- anzeigen und ToggleFriendsFrame dadurch vollstaendig umgehen.
+    if FriendsFrame and FriendsFrame.HookScript then
+        FriendsFrame:HookScript("OnShow", function(self)
+            if tonumber(self.selectedTab) == 3 then
+                Log("FriendsFrame direkt mit Guild-Tab geoeffnet -> GuildView")
+                GVE.guildSocialSelected = true
+                GVE:HideBlizzardGuildFrame()
+                GVE:Open()
+            end
+        end)
+        Log("Hook: FriendsFrame-OnShow prueft gespeicherten Guild-Tab")
     end
 
     if GuildControlPopupFrame then

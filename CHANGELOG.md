@@ -2,6 +2,15 @@
 
 ## 1.1 - 2026-09-27
 
+- Fixed reopening Guild-View-Extended through `O` after the stock Guild tab
+  had previously redirected to and closed the addon window.
+- Added **Sync guild now**, which refreshes the local profession snapshot,
+  directly requests every online guild member, and sends a guild discovery
+  broadcast without requiring chat interaction.
+- Forced manual synchronization to bypass cached timestamps and stale pending
+  requests while retaining protocol validation and throttled transfers.
+- Added clear diagnostics for automatic profession capture, outgoing snapshots,
+  incoming timestamps, and outdated responses.
 - Added automatic discovery between compatible online guild members.
 - Added rate-limited background requests instead of requiring every profession
   snapshot to be requested manually.

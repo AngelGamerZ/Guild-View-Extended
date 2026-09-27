@@ -34,13 +34,15 @@ local L = GetLocale() == "deDE" and {
     denied="Freigabe wurde vom Spieler deaktiviert.", empty="Der Spieler hat diese Daten noch nicht erfasst.",
     busy="Der Spieler überträgt gerade andere Daten. Bitte später erneut versuchen.",
     help="Berufe werden als vollständige, anklickbare 3.3.5a-Berufslinks gespeichert – so wie beim Posten aus dem Zauberbuch in den Chat.",
-    footerShort="Gespeicherte Berufs-Snapshots · nicht live",
+    footerShort="Berufslinks aus der letzten Synchronisierung",
     clickToOpen="Klicken, um den verlinkten Beruf zu öffnen.",
     shareP="Eigene Berufe teilen", captured="Lokaler Snapshot aktualisiert.", players="%d Spieler",
     professionSearch="Berufe durchsuchen ...", professionCount="%d Berufe",
     current="aktuell", stale="veraltet", never="keine Daten",
     sec="Sek.", min="Min.", hour="Std.", day="Tage",
     openProfession="Kein vollständiger Berufslink gefunden. Öffne dein Zauberbuch oder deinen eigenen Beruf und versuche es erneut.",
+    syncNow="Jetzt synchronisieren", syncSent="Gildenweite Synchronisierung gestartet: eigene Berufe verteilt und aktuelle Daten angefragt.",
+    staleReply="Antwort erhalten, aber der Snapshot des Spielers ist weiterhin veraltet.",
     lastCaptured="zuletzt erfasst vor %s",
     synchronized="%d synchronisierte Spieler", categoryPlayers="%d Spieler",
     tooBig="Die Berufsdaten sind für die Synchronisierung zu groß.",
@@ -62,13 +64,15 @@ local L = GetLocale() == "deDE" and {
     denied="Sharing was disabled by the player.", empty="The player has not captured this data yet.",
     busy="The player is transferring other data. Please try again later.",
     help="Professions are stored as complete, clickable 3.3.5a trade links – just like posting them from the spellbook into chat.",
-    footerShort="Cached profession snapshots · not live",
+    footerShort="Profession links from the latest synchronization",
     clickToOpen="Click to open the linked profession.",
     shareP="Share my professions", captured="Local snapshot updated.", players="%d players",
     professionSearch="Search professions ...", professionCount="%d professions",
     current="current", stale="stale", never="no data",
     sec="sec", min="min", hour="hr", day="days",
     openProfession="No complete profession link was found. Open your spellbook or your own profession and try again.",
+    syncNow="Sync guild now", syncSent="Guild synchronization started: shared your professions and requested current data.",
+    staleReply="Response received, but the player's snapshot is still outdated.",
     lastCaptured="last captured %s ago",
     synchronized="%d synchronized players", categoryPlayers="%d players",
     tooBig="The profession data is too large to synchronize.",
@@ -439,7 +443,7 @@ end
 ---------------------------------------------------------------------------
 -- Lokale Erfassung
 ---------------------------------------------------------------------------
-function Sync:CaptureProfession(showMessage)
+function Sync:CaptureProfession(showMessage, refreshTimestamp)
     if type(self.own) ~= "table" then return false end
     local capturedAt, professions, candidateCount = time(), {}, 0
     local function AddLink(value, source, logMissing)
@@ -530,6 +534,15 @@ function Sync:CaptureProfession(showMessage)
     end
 
     if unchanged then
+        if refreshTimestamp then
+            -- Eine direkte Datenanfrage bestaetigt, dass diese Links gerade
+            -- erneut im eigenen Zauberbuch gefunden wurden. Deshalb bekommt
+            -- auch ein inhaltlich unveraenderter Snapshot einen frischen
+            -- Synchronisierungszeitpunkt.
+            for _, profession in pairs(previous) do profession.capturedAt = capturedAt end
+            self.own.professionsCapturedAt = capturedAt
+            self.own.receivedAt = capturedAt
+        end
         if showMessage then
             local count = 0
             for _ in pairs(previous) do count = count + 1 end
@@ -636,19 +649,66 @@ function Sync:Announce(command, target)
     return true
 end
 
-function Sync:QueueAutoRequest(name, advertisedAt)
+function Sync:QueueAutoRequest(name, advertisedAt, force)
     local clean, stamp = CleanName(name), tonumber(advertisedAt)
     local key = KeyName(clean)
-    if not clean or not key or IsOwn(clean) or not IsInteger(stamp, 1, time() + 3600) then return false end
+    local minimumStamp = force and 0 or 1
+    if not clean or not key or IsOwn(clean) or not IsInteger(stamp, minimumStamp, time() + 3600) then return false end
     local member = self:GetMember(clean)
     if not member then return false end
     local cached = self:GetPlayerData(clean)
-    if cached and cached.professions and (tonumber(cached.professionsCapturedAt) or 0) >= stamp then return false end
+    if not force and cached and cached.professions and (tonumber(cached.professionsCapturedAt) or 0) >= stamp then return false end
     local now = GetTime()
     if self.pending[key] or self.autoQueued[key]
-    or self.autoLastRequest[key] and now - self.autoLastRequest[key] < AUTO_REQUEST_RETRY then return false end
+    or not force and self.autoLastRequest[key] and now - self.autoLastRequest[key] < AUTO_REQUEST_RETRY then return false end
+    if force then
+        -- Der manuelle Knopf ist eine ausdrueckliche Benutzeraktion und darf
+        -- deshalb einen alten automatischen Retry-/Cooldown-Zeitpunkt umgehen.
+        self.autoLastRequest[key] = nil
+        self.cooldowns[key] = nil
+    end
     self.autoQueued[key] = true
-    self.autoQueue[#self.autoQueue + 1] = {name=clean, key=key}
+    self.autoQueue[#self.autoQueue + 1] = {name=clean, key=key, force=force and true or false}
+    return true
+end
+
+function Sync:ManualBroadcastSync()
+    if not self.db then return false end
+
+    -- Eigene Links unmittelbar neu einlesen. Auch wenn sie unveraendert sind,
+    -- wird danach U gesendet: Der Benutzer hat den Push bewusst angefordert.
+    local captured = self:CaptureProfession(false, true)
+    if captured and self.own and self.own.professions then
+        if self.db.settings.shareProfessions then self:Announce("U") end
+    end
+
+    -- H ist der kompatible, gildenweite Discovery-Broadcast. Auch aeltere
+    -- Addon-Releases mit demselben Protokoll kennen ihn und antworten per A.
+    -- Antworten in diesem kurzen Fenster werden absichtlich erneut abgefragt,
+    -- selbst wenn der lokale Cache denselben Zeitstempel meldet.
+    self.forceDiscoveryUntil = GetTime() + REQUEST_TIMEOUT
+    -- Bereits bekannte Online-Mitglieder werden sofort eingeplant. Der
+    -- Guild-Broadcast bleibt zusaetzlich aktiv, damit auch gerade erst
+    -- entdeckte kompatible Clients antworten koennen.
+    wipe(self.autoQueue)
+    wipe(self.autoQueued)
+    local directRequests = 0
+    for _, member in ipairs(GVE:GetMembers() or {}) do
+        if member.online and not IsOwn(member.name) then
+            local memberKey = KeyName(member.name)
+            if memberKey then
+                self.pending[memberKey] = nil
+                self.receiving[memberKey] = nil
+                self.viewMessages[memberKey] = nil
+            end
+            if self:QueueAutoRequest(member.name, 0, true) then directRequests = directRequests + 1 end
+        end
+    end
+    self:Announce("H")
+    DebugLog("Manuelle Gildensynchronisierung: "..directRequests.." direkte Online-Anfragen + Guild-Broadcast")
+    if DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33aaff[GuildView]|r "..L.syncSent)
+    end
     return true
 end
 
@@ -686,6 +746,7 @@ function Sync:SendSnapshot(target, requestID)
         self:QueueControlMessage("N|"..requestID.."|BUSY", target)
         return
     end
+    DebugLog("Sende Berufs-Snapshot an "..tostring(target)..": "..chunks.." Teil(e), Zeitstempel "..tostring(capturedAt))
     self:QueueMessage("B|"..requestID.."|"..(tonumber(capturedAt) or time()).."|"..chunks, target)
     for index = 1, chunks do
         local part = payload:sub((index - 1) * CHUNK_BYTES + 1, index * CHUNK_BYTES)
@@ -694,7 +755,7 @@ function Sync:SendSnapshot(target, requestID)
     self:QueueMessage("E|"..requestID, target)
 end
 
-function Sync:Request(name, automatic)
+function Sync:Request(name, automatic, force)
     local clean = CleanName(name)
     local key = KeyName(clean)
     if not clean or not key or not self:IsGuildMember(clean) then return end
@@ -704,11 +765,15 @@ function Sync:Request(name, automatic)
     end
     local now = GetTime()
     if self.pending[key] then return false end
-    if self.cooldowns[key] and now - self.cooldowns[key] < REQUEST_COOLDOWN then return end
+    if not force and self.cooldowns[key] and now - self.cooldowns[key] < REQUEST_COOLDOWN then return end
     self.cooldowns[key] = now
     if automatic then self.autoLastRequest[key] = now end
     local requestID = tostring(math.floor(now * 1000) % 10000000)..tostring(math.random(100, 999))
-    self.pending[key] = {started=now, lastActivity=now, deadline=now + ABSOLUTE_TRANSFER_TIMEOUT, requestID=requestID}
+    self.pending[key] = {
+        started=now, lastActivity=now, deadline=now + ABSOLUTE_TRANSFER_TIMEOUT,
+        requestID=requestID, requireFresh=force and true or false,
+        requestedAt=time(),
+    }
     SendAddonMessage(PREFIX, "Q|"..requestID, "WHISPER", clean)
     self.viewMessages[key] = L.pending
     self:RefreshUI()
@@ -732,7 +797,8 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
         elseif command == "U" and channel == "GUILD" then
             self:QueueAutoRequest(cleanSender, advertisedAt)
         elseif command == "A" and channel == "WHISPER" then
-            self:QueueAutoRequest(cleanSender, advertisedAt)
+            local force = self.forceDiscoveryUntil and GetTime() <= self.forceDiscoveryUntil
+            self:QueueAutoRequest(cleanSender, advertisedAt, force and true or false)
         end
         return
     end
@@ -745,7 +811,8 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
         local now = GetTime()
         if self.incomingCooldown[senderKey] and now - self.incomingCooldown[senderKey] < 30 then return end
         self.incomingCooldown[senderKey] = now
-        self:CaptureProfession(false)
+        local captured = self:CaptureProfession(false, true)
+        DebugLog("Direkte Anfrage von "..cleanSender..": lokale Erfassung="..tostring(captured))
         self:SendSnapshot(cleanSender, requestID)
         return
     end
@@ -811,7 +878,14 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
             self.db.players[cached[1].key] = nil
             table.remove(cached, 1)
         end
-        self.viewMessages[pendingKey] = nil
+        if pending.requireFresh
+        and (tonumber(decoded.professionsCapturedAt) or 0) < (tonumber(pending.requestedAt) or 0) - 60 then
+            self.viewMessages[pendingKey] = L.staleReply
+        else
+            self.viewMessages[pendingKey] = nil
+        end
+        DebugLog("Snapshot von "..cleanSender.." empfangen: Zeitstempel "
+            ..tostring(decoded.professionsCapturedAt)..", frisch angefordert="..tostring(pending.requireFresh))
         self:RefreshUI()
     end
 end
@@ -1204,6 +1278,13 @@ function Sync:BuildUI()
     expandButton:SetScript("OnClick", function(self) Sync:SetAllCategories(self.expandNext) end)
     self.expandButton = expandButton
 
+    local syncNowButton = MakeFlatButton(content, 166, 26, L.syncNow, true)
+    syncNowButton:SetPoint("RIGHT", expandButton, "LEFT", -6, 0)
+    syncNowButton:SetScript("OnClick", function()
+        Sync:ManualBroadcastSync()
+    end)
+    self.syncNowButton = syncNowButton
+
     self.playerCount = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     self.playerCount:SetPoint("TOPLEFT", search, "BOTTOMLEFT", 2, -7)
     self.playerCount:SetTextColor(0.49, 0.63, 0.73)
@@ -1384,7 +1465,7 @@ eventFrame:SetScript("OnUpdate", function(self, elapsed)
         local request = table.remove(Sync.autoQueue, 1)
         if request then
             Sync.autoQueued[request.key] = nil
-            Sync:Request(request.name, true)
+            Sync:Request(request.name, true, request.force)
         end
     end
     if Sync.elapsed < SEND_INTERVAL then return end

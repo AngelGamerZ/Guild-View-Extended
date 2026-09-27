@@ -156,13 +156,43 @@ do
     GVE.Sync:OnAddonMessage("GVEX4", "H|1800000000", "GUILD", "Jaina")
     equal(#GVE.Sync.autoQueue, 1, "duplicate discovery is coalesced")
 
+    -- A manual guild-wide refresh must ask a compatible client again even if
+    -- its advertised timestamp matches the cached snapshot exactly. This is
+    -- what makes refreshes reliable across addon release differences that use
+    -- the same synchronization protocol.
+    wipe(GVE.Sync.autoQueue)
+    wipe(GVE.Sync.autoQueued)
+    wipe(GVE.Sync.autoLastRequest)
+    GVE.Sync.db.players.jaina.professionsCapturedAt = 1800000000
+    GVE.Sync.forceDiscoveryUntil = GetTime() + 15
+    GVE.Sync:OnAddonMessage("GVEX4", "A|1800000000", "WHISPER", "Jaina")
+    equal(#GVE.Sync.autoQueue, 1, "manual discovery forces refresh for equal cached timestamp")
+    equal(GVE.Sync.autoQueue[1].name, "Jaina", "forced refresh target")
+
     GVE.Sync.own = {
-        professionsCapturedAt=1800000000,
+        professionsCapturedAt=1799999000,
         professions={Schmiedekunst={
-            name="Schmiedekunst", skill=450, maxSkill=450, capturedAt=1800000000,
+            name="Schmiedekunst", skill=450, maxSkill=450, capturedAt=1799999000,
             tradeLink="|cffffd000|Htrade:51309:450:450:ABCDEF:xG{_yK|h[Schmiedekunst]|h|r",
         }},
     }
+
+    GetNumSpellTabs = function() return 1 end
+    GetSpellTabInfo = function() return "Berufe", nil, 0, 1 end
+    GetSpellLink = function()
+        return "|cff71d5ff|Hspell:2018|h[Schmiedekunst]|h|r",
+            "|cffffd000|Htrade:51309:450:450:ABCDEF:xG{_yK|h[Schmiedekunst]|h|r"
+    end
+    IsTradeSkillLinked = function() return false end
+    equal(GVE.Sync:CaptureProfession(false, true), true, "direct request refreshes unchanged local snapshot")
+    equal(GVE.Sync.own.professionsCapturedAt, 1800000000, "unchanged snapshot receives fresh confirmation time")
+    wipe(GVE.Sync.sendQueue)
+    equal(GVE.Sync:ManualBroadcastSync(), true, "manual guild synchronization starts")
+    equal(GVE.Sync.sendQueue[1].message, "U|1800000000", "manual synchronization pushes own snapshot")
+    equal(GVE.Sync.sendQueue[2].message, "H|1800000000", "manual synchronization broadcasts discovery request")
+    equal(#GVE.Sync.autoQueue, 1, "manual synchronization directly queues online guild members")
+    equal(GVE.Sync.autoQueue[1].force, true, "manual synchronization bypasses cached timestamps")
+
     wipe(GVE.Sync.sendQueue)
     equal(GVE.Sync:Announce("H"), true, "discovery announcement queued")
     equal(GVE.Sync.sendQueue[1].channel, "GUILD", "discovery uses guild addon channel")
