@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2 - 2026-09-27
+
+- Changed the Social-window redirect so selecting the stock Guild tab opens
+  Guild-View-Extended while resetting Blizzard's hidden selection to Friends.
+- Restored immediate access to the Friends list through `O`, including a
+  direct switch from an open Guild-View-Extended window.
+- Added regression coverage for Guild redirection, Friends-tab restoration,
+  and unchanged Who/Raid behavior.
+
 ## 1.1 - 2026-09-27
 
 - Added peer-based version discovery with one-time chat notifications, a

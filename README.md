@@ -23,7 +23,7 @@ Guild-View-Extended replaces the basic guild view with an expanded interface for
 
 ## Screenshots
 
-The screenshots below are deterministic renders of the actual version 1.1
+The screenshots below are deterministic renders of the actual version 1.2
 layout using example guild, player, and profession data. They do not show real
 guild data.
 
@@ -105,7 +105,7 @@ Changing a search or time filter returns the list to its first row. Escape
 closes the window even while the search field has keyboard focus. Opening the
 window requests fresh roster data, including offline members.
 
-Version 1.1 identifies itself in the addon list and in the login chat message.
+Version 1.2 identifies itself in the addon list and in the login chat message.
 If the message still shows an older version (or no version), the game is loading
 a different addon copy. Install the current release ZIP into the active
 client's `Interface/AddOns/` directory and use `/reload` before testing.

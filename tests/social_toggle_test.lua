@@ -38,20 +38,15 @@ equal(GVE:IsGuildSocialRequest(3), true,
 equal(GVE:IsGuildSocialRequest(2), false,
     "other explicit Social tabs are untouched")
 
-GVE.guildSocialSelected = true
-FriendsFrame.selectedTab = 1
-equal(GVE:IsGuildSocialRequest(nil), true,
-    "remembered Guild redirect survives clients resetting selectedTab")
-GVE.guildSocialSelected = nil
-
 FriendsFrame = nil
 equal(GVE:IsGuildSocialRequest(nil), nil,
     "missing FriendsFrame does not redirect a generic Social request")
 
 do
-    local originalCalls, openCalls, toggleCalls = 0, 0, 0
-    ToggleFriendsFrame = function() originalCalls = originalCalls + 1 end
+    local originalCalls, originalTab, openCalls, toggleCalls, closeCalls = 0, nil, 0, 0, 0
+    ToggleFriendsFrame = function(tab) originalCalls, originalTab = originalCalls + 1, tab end
     HideUIPanel = function(frame) frame.shown = false end
+    PanelTemplates_SetTab = function(frame, tab) frame.templateTab = tab end
     GuildFrame = {Hide=function(self) self.hidden = true end}
     FriendsFrame = {
         selectedTab=1, shown=true, scripts={},
@@ -64,20 +59,32 @@ do
     FriendsFrameTab1, FriendsFrameTab2, FriendsFrameTab3, FriendsFrameTab4 = NewTab(), NewTab(), NewTab(), NewTab()
     GVE.Open = function() openCalls = openCalls + 1 end
     GVE.Toggle = function() toggleCalls = toggleCalls + 1 end
+    GVE.Close = function() closeCalls = closeCalls + 1; GVE.f.shown = false end
+    GVE.f = {shown=false, IsShown=function(self) return self.shown end}
     GVE:HookGuildFrame()
 
     FriendsFrameTab3.scripts.OnClick()
     equal(openCalls, 1, "Guild tab opens Guild View")
-    equal(GVE.guildSocialSelected, true, "Guild tab selection is remembered independently")
+    equal(FriendsFrame.selectedTab, 1, "Guild redirect resets stock Social frame to Friends")
+    equal(FriendsFrame.templateTab, 1, "visible stock tab state resets to Friends")
 
-    FriendsFrame.selectedTab = 1 -- observed behavior on clients that reset the stock field
+    FriendsFrame.selectedTab = 1
     ToggleFriendsFrame(nil)
-    equal(toggleCalls, 1, "second O press still routes to Guild View")
-    equal(originalCalls, 0, "stock Social window remains closed for remembered Guild route")
+    equal(originalCalls, 1, "O opens the stock Social frame after Guild redirect")
 
-    FriendsFrameTab1.scripts.OnClick()
+    FriendsFrame.selectedTab = 3
     ToggleFriendsFrame(nil)
-    equal(originalCalls, 1, "choosing Friends restores the stock O behavior")
+    equal(toggleCalls, 1, "remembered stock Guild tab redirects to Guild View once")
+    equal(FriendsFrame.selectedTab, 1, "remembered Guild redirect also resets to Friends")
+
+    GVE.f.shown = true
+    ToggleFriendsFrame(nil)
+    equal(closeCalls, 1, "O closes an open Guild View before showing Friends")
+    equal(originalCalls, 2, "O switches directly from Guild View to Friends")
+    equal(originalTab, 1, "switch from Guild View explicitly opens Friends tab")
+
+    ToggleFriendsFrame(2)
+    equal(originalCalls, 3, "other explicit Social tabs remain stock behavior")
 end
 
 print("social_toggle_test.lua: all tests passed")
