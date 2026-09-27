@@ -127,6 +127,8 @@ do
     end
     GVE.Sync.playerSearch = {GetText=function() return "" end}
     GVE.Sync:BuildPlayerList()
+    GVE.Sync:SetAllCategories(true)
+    GVE.Sync:BuildPlayerList()
     local jainaRows, thrallRows = 0, 0
     for _, row in ipairs(GVE.Sync.playerList) do
         if row.member and row.member.name == "Jaina" then jainaRows = jainaRows + 1 end
@@ -139,6 +141,44 @@ do
     GVE.Sync:BuildPlayerList()
     equal(#GVE.Sync.playerList, 2, "profession search returns header and matching player")
     equal(GVE.Sync.playerList[2].member.name, "Jaina", "profession search result")
+end
+
+do
+    wipe(GVE.Sync.autoQueue)
+    wipe(GVE.Sync.autoQueued)
+    wipe(GVE.Sync.autoLastRequest)
+    wipe(GVE.Sync.sendQueue)
+
+    GVE.Sync:OnAddonMessage("GVEX4", "H|1800000000", "GUILD", "Jaina")
+    equal(#GVE.Sync.autoQueue, 1, "guild discovery queues automatic request")
+    equal(GVE.Sync.autoQueue[1].name, "Jaina", "automatic request target")
+
+    GVE.Sync:OnAddonMessage("GVEX4", "H|1800000000", "GUILD", "Jaina")
+    equal(#GVE.Sync.autoQueue, 1, "duplicate discovery is coalesced")
+
+    GVE.Sync.own = {
+        professionsCapturedAt=1800000000,
+        professions={Schmiedekunst={
+            name="Schmiedekunst", skill=450, maxSkill=450, capturedAt=1800000000,
+            tradeLink="|cffffd000|Htrade:51309:450:450:ABCDEF:xG{_yK|h[Schmiedekunst]|h|r",
+        }},
+    }
+    wipe(GVE.Sync.sendQueue)
+    equal(GVE.Sync:Announce("H"), true, "discovery announcement queued")
+    equal(GVE.Sync.sendQueue[1].channel, "GUILD", "discovery uses guild addon channel")
+    equal(GVE.Sync.sendQueue[1].message, "H|1800000000", "discovery advertises snapshot time")
+
+    local sent = {}
+    SendAddonMessage = function(prefix, message, channel, target)
+        sent[#sent + 1] = {prefix=prefix, message=message, channel=channel, target=target}
+    end
+    GVE.Sync.elapsed = 0
+    GVE.Sync.autoElapsed = 0
+    eventFrame.scripts.OnUpdate(eventFrame, 1.1)
+    equal(sent[1].prefix, "GVEX4", "automatic request uses sync prefix")
+    equal(sent[1].channel, "WHISPER", "automatic snapshot request uses whisper")
+    equal(sent[1].target, "Jaina", "automatic request is sent to discovered member")
+    equal(sent[2].channel, "GUILD", "queued discovery announcement is sent to guild")
 end
 
 print("Guild View Extended sync snapshot tests passed")

@@ -4,7 +4,7 @@ Guild-View-Extended replaces the basic guild view with an expanded interface for
 
 ## Features
 
-- Search the guild roster by member name
+- Search the guild roster by name, class, zone, rank, or public note
 - Filter members by class, rank, and online status
 - Sort the roster using extended columns
 - Review last-online information with configurable time filters
@@ -14,14 +14,28 @@ Guild-View-Extended replaces the basic guild view with an expanded interface for
 - Refresh member and guild-note changes automatically while the window is open
 - Open member details and supported guild-management actions
 - Access guild controls and member invitations when permitted
-- View guild-related information and diagnostic logs in dedicated panels
+- View MOTD and Guild Information side by side at a glance
+- Open the Guild Log on demand from the member toolbar
 - Open synchronized, clickable profession links grouped by profession
-- Request fresh data directly from an online member through 3.3.5a addon whispers
+- Synchronize profession changes automatically between compatible online guild members
 
 ## Screenshots
-<img width="2385" height="1160" alt="Screenshot 2026-07-20 175229" src="https://github.com/user-attachments/assets/e4c887d0-63af-442d-a37b-bc1d134d5bf7" />
-<img width="1865" height="1162" alt="Screenshot 2026-07-20 175215" src="https://github.com/user-attachments/assets/74308b87-6b3b-4783-b4b0-f68a4217e04c" />
-<img width="2252" height="1149" alt="Screenshot 2026-07-20 175239" src="https://github.com/user-attachments/assets/a225d865-d02c-41c9-a97a-071352523c05" />
+
+The screenshots below are deterministic renders of the actual version 1.1
+layout using example guild, player, and profession data. They do not show real
+guild data.
+
+### Members
+
+![Guild-View-Extended members](docs/screenshots/members.png)
+
+### Member details
+
+![Guild-View-Extended member details](docs/screenshots/details.png)
+
+### Professions
+
+![Guild-View-Extended professions](docs/screenshots/professions.png)
 
 
 ## Requirements
@@ -44,6 +58,14 @@ Guild-View-Extended replaces the basic guild view with an expanded interface for
 
 ## Member actions and live updates
 
+The compact member table uses original 3.3.5a class icons and displays
+**class icon, name, level & class, zone, rank, and public note**. Rows are 32
+pixels high so large rosters remain easy to scan without becoming oversized.
+The roster scrollbar stays inside the member page. Clicking a member opens a
+compact centered detail card rather than a full-height drawer; rank, public
+note, officer note, group invitation, removal, and guild-leader transfer keep
+their existing permission checks and behavior.
+
 - Left-click a guild member to open the existing member detail window. The
   **Invite GRP** button directly above **Remove** sends an immediate group
   invitation. It is disabled for the player's own character.
@@ -57,9 +79,9 @@ Guild-View-Extended replaces the basic guild view with an expanded interface for
 
 ## Last Online window
 
-For guild leaders and officers, the **Last Online** window uses a wider,
+For guild leaders and officers, the **Last Online** in-window view uses a wider,
 three-column layout for character name, guild rank, and last-online time. The
-member search updates immediately while typing and is combined with the
+name-or-rank search updates immediately while typing and is combined with the
 existing minimum-offline-duration filter. **Clear** resets only the member
 search; **Reset** resets only the duration filter. The result count shows the
 number of matches alongside the complete roster size.
@@ -68,7 +90,7 @@ Changing a search or time filter returns the list to its first row. Escape
 closes the window even while the search field has keyboard focus. Opening the
 window requests fresh roster data, including offline members.
 
-Version 1.0 identifies itself in the addon list and in the login chat message.
+Version 1.1 identifies itself in the addon list and in the login chat message.
 If the message still shows an older version (or no version), the game is loading
 a different addon copy. Install the current release ZIP into the active
 client's `Interface/AddOns/` directory and use `/reload` before testing.
@@ -77,7 +99,7 @@ client's `Interface/AddOns/` directory and use `/reload` before testing.
 
 1. Open Guild-View-Extended with `/gve` or the normal guild shortcut.
 2. Click **CSV exportieren** on a German client or **Export CSV** on another
-   client. The button is at the top of the guild-log panel on the right.
+   client in the member toolbar.
 3. If the complete roster is not ready yet, the addon requests it and waits for
    `GUILD_ROSTER_UPDATE`. Offline members are included.
 4. In the export window, press `Ctrl+C`; the complete text is already selected.
@@ -109,8 +131,12 @@ The **Berufe** / **Professions** tab groups synchronized players by profession.
 A player with multiple professions appears in every matching category. Players
 without synchronized data remain available in the **Not synchronized** group.
 
-The single search field accepts player and profession names. Select a player to
-see their exact WoW profession hyperlinks and snapshot age on the right.
+The single search field accepts player and profession names. Professions are
+shown as full-width expandable rows with their 3.3.5a spell icon. Expanding a
+profession lists every synchronized player with rank, exact clickable WoW
+profession hyperlink, skill, snapshot age, and synchronization status. Several
+professions can remain open at once; online and snapshot-age filters help keep
+large guilds readable.
 
 This is a request-based snapshot system:
 
@@ -125,6 +151,10 @@ This is a request-based snapshot system:
   profession window is open.
 - Fresh requests require the target player to be online and running a
   compatible Guild-View-Extended version. Offline players show the last cache.
+- Compatible clients discover each other automatically after login. Requests
+  are queued and rate-limited, and a changed profession link triggers a fresh
+  synchronization without requiring a click. **Request data** remains available
+  as a manual refresh action.
 - Only validated profession links, skill values, and snapshot times are
   transferred. Guild notes and unrelated character data are not.
 - Profession sharing is enabled by default and can be disabled with the
@@ -141,8 +171,9 @@ clipboard APIs are used. Cached synchronization data is stored in
 Saving the stock 3.3.5a Guild Control dialog no longer opens the old guild
 window. Guild View suppresses only the `GuildStatus_Update()` call made during
 that GVE-owned save operation; Blizzard's permission-saving logic remains
-unchanged. Guild Control follows the original 3.3.5a rule and is available to
-the guild leader.
+unchanged. Its outer frame follows Guild-View-Extended's flat design while its
+original controls remain intact. Guild Control follows the original 3.3.5a
+rule and is available to the guild leader.
 
 ## Backup and rollback
 

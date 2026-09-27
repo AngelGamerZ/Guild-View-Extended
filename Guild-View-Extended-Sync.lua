@@ -17,6 +17,8 @@ local MAX_BYTES = MAX_CHUNKS * CHUNK_BYTES
 local CACHE_TTL = 30 * 24 * 60 * 60
 local REQUEST_TIMEOUT = 15
 local REQUEST_COOLDOWN = 10
+local AUTO_REQUEST_INTERVAL = 1.0
+local AUTO_REQUEST_RETRY = 300
 local SEND_INTERVAL = 0.09
 local MAX_CACHED_PLAYERS = 300
 local MAX_QUEUE_BEFORE_BUSY = 80
@@ -43,6 +45,13 @@ local L = GetLocale() == "deDE" and {
     synchronized="%d synchronisierte Spieler", categoryPlayers="%d Spieler",
     tooBig="Die Berufsdaten sind für die Synchronisierung zu groß.",
     notSynchronized="Noch nicht synchronisiert",
+    columnPlayer="Beruf / Spieler", columnLink="Berufslink", columnSkill="Skill",
+    columnAge="Aktualität", columnStatus="Status", allPlayers="Alle Spieler",
+    onlineOnly="Online", offlineOnly="Offline", allData="Alle Daten",
+    currentOnly="Aktuell", staleOnly="Veraltet", openAll="Alle öffnen",
+    closeAll="Alle schließen", onlineCount="%d Spieler · %d online",
+    syncActive="Automatische Synchronisierung aktiv", offlineCache="Offline · Cache",
+    noResults="Keine passenden Spieler oder Berufe.", requestShort="Anfragen",
 } or {
     members="Members", tab="Professions", search="Search player or profession ...",
     professions="Professions", request="Request data",
@@ -64,6 +73,13 @@ local L = GetLocale() == "deDE" and {
     synchronized="%d synchronized players", categoryPlayers="%d players",
     tooBig="The profession data is too large to synchronize.",
     notSynchronized="Not synchronized",
+    columnPlayer="Profession / player", columnLink="Profession link", columnSkill="Skill",
+    columnAge="Last update", columnStatus="Status", allPlayers="All players",
+    onlineOnly="Online", offlineOnly="Offline", allData="All data",
+    currentOnly="Current", staleOnly="Stale", openAll="Expand all",
+    closeAll="Collapse all", onlineCount="%d players · %d online",
+    syncActive="Automatic synchronization active", offlineCache="Offline · cache",
+    noResults="No matching players or professions.", requestShort="Request",
 }
 
 local function CleanName(value)
@@ -103,7 +119,7 @@ local function ParseTradeLink(value)
     spellID, skill, maxSkill = tonumber(spellID), tonumber(skill), tonumber(maxSkill)
     if not IsInteger(spellID, 1, 10000000) or not IsInteger(skill, 0, 1000) or not IsInteger(maxSkill, 0, 1000) then return nil end
     if #ownerGUID < 1 or #ownerGUID > 32 or #tradeData > 10000 then return nil end
-    return value, label, skill, maxSkill
+    return value, label, skill, maxSkill, spellID
 end
 
 local function SafeTradeLink(value)
@@ -304,11 +320,6 @@ local function PaintPlayerRow(row, alternate)
     end
 end
 
-local function PaintDetailRow(row, alternate)
-    local color = row.rowHover and UI_COLOR.hover or (alternate and UI_COLOR.rowB or UI_COLOR.rowA)
-    SetTextureColor(row.bg, color)
-end
-
 function Sync:InitDB()
     if type(GVESyncData) ~= "table" then
         GVESyncData = {schema=PROTOCOL, players={}, ownByCharacter={}, settings={}}
@@ -381,6 +392,9 @@ function Sync:InitDB()
         if self.cooldowns then wipe(self.cooldowns) end
         if self.incomingCooldown then wipe(self.incomingCooldown) end
         if self.viewMessages then wipe(self.viewMessages) end
+        if self.autoQueue then wipe(self.autoQueue) end
+        if self.autoQueued then wipe(self.autoQueued) end
+        if self.autoLastRequest then wipe(self.autoLastRequest) end
     end
     db.guildKey = guildKey
     local characterKey = guildKey.."\031"..(UnitName("player") or "Unknown")
@@ -496,6 +510,36 @@ function Sync:CaptureProfession(showMessage)
         if showMessage then DEFAULT_CHAT_FRAME:AddMessage("|cff33aaff[GuildView]|r "..L.openProfession) end
         return false
     end
+
+    local unchanged = true
+    local previous = self.own.professions
+    if type(previous) ~= "table" then
+        unchanged = false
+    else
+        for name, profession in pairs(professions) do
+            if type(previous[name]) ~= "table" or previous[name].tradeLink ~= profession.tradeLink then
+                unchanged = false
+                break
+            end
+        end
+        if unchanged then
+            for name in pairs(previous) do
+                if not professions[name] then unchanged = false break end
+            end
+        end
+    end
+
+    if unchanged then
+        if showMessage then
+            local count = 0
+            for _ in pairs(previous) do count = count + 1 end
+            DebugLog("Capture beendet: "..count.." Berufe unverändert")
+            DEFAULT_CHAT_FRAME:AddMessage("|cff33aaff[GuildView]|r "..L.captured)
+        end
+        self:RefreshUI()
+        return true
+    end
+
     self.own.professions = professions
     local oldestAt
     for _, profession in pairs(self.own.professions) do
@@ -510,6 +554,7 @@ function Sync:CaptureProfession(showMessage)
     end
     if showMessage then DEFAULT_CHAT_FRAME:AddMessage("|cff33aaff[GuildView]|r "..L.captured) end
     self:RefreshUI()
+    if type(self.Announce) == "function" then self:Announce("U") end
     return true
 end
 
@@ -567,14 +612,43 @@ function Sync:DeserializeProfessions(payload, capturedAt)
     return {professions=professions, professionsCapturedAt=oldestAt or capturedAt}
 end
 
-function Sync:QueueMessage(message, target)
+function Sync:QueueMessage(message, target, channel)
     if #self.sendQueue >= MAX_CHUNKS * 2 then return end
-    self.sendQueue[#self.sendQueue + 1] = {message=message, target=target}
+    self.sendQueue[#self.sendQueue + 1] = {message=message, target=target, channel=channel or "WHISPER"}
 end
 
-function Sync:QueueControlMessage(message, target)
+function Sync:QueueControlMessage(message, target, channel)
     if #self.sendQueue >= MAX_CHUNKS * 2 then return false end
-    table.insert(self.sendQueue, 1, {message=message, target=target})
+    table.insert(self.sendQueue, 1, {message=message, target=target, channel=channel or "WHISPER"})
+    return true
+end
+
+function Sync:Announce(command, target)
+    if not target and type(IsInGuild) == "function" and not IsInGuild() then return false end
+    if command ~= "H" then
+        if not self.db or not self.db.settings.shareProfessions
+        or not self.own or not self.own.professions then return false end
+    end
+    local stamp = self.own and tonumber(self.own.professionsCapturedAt) or 0
+    local message = command.."|"..math.max(0, math.floor(stamp or 0))
+    if target then return self:QueueControlMessage(message, target, "WHISPER") end
+    self:QueueMessage(message, nil, "GUILD")
+    return true
+end
+
+function Sync:QueueAutoRequest(name, advertisedAt)
+    local clean, stamp = CleanName(name), tonumber(advertisedAt)
+    local key = KeyName(clean)
+    if not clean or not key or IsOwn(clean) or not IsInteger(stamp, 1, time() + 3600) then return false end
+    local member = self:GetMember(clean)
+    if not member then return false end
+    local cached = self:GetPlayerData(clean)
+    if cached and cached.professions and (tonumber(cached.professionsCapturedAt) or 0) >= stamp then return false end
+    local now = GetTime()
+    if self.pending[key] or self.autoQueued[key]
+    or self.autoLastRequest[key] and now - self.autoLastRequest[key] < AUTO_REQUEST_RETRY then return false end
+    self.autoQueued[key] = true
+    self.autoQueue[#self.autoQueue + 1] = {name=clean, key=key}
     return true
 end
 
@@ -620,7 +694,7 @@ function Sync:SendSnapshot(target, requestID)
     self:QueueMessage("E|"..requestID, target)
 end
 
-function Sync:Request(name)
+function Sync:Request(name, automatic)
     local clean = CleanName(name)
     local key = KeyName(clean)
     if not clean or not key or not self:IsGuildMember(clean) then return end
@@ -629,13 +703,16 @@ function Sync:Request(name)
         return
     end
     local now = GetTime()
+    if self.pending[key] then return false end
     if self.cooldowns[key] and now - self.cooldowns[key] < REQUEST_COOLDOWN then return end
     self.cooldowns[key] = now
+    if automatic then self.autoLastRequest[key] = now end
     local requestID = tostring(math.floor(now * 1000) % 10000000)..tostring(math.random(100, 999))
     self.pending[key] = {started=now, lastActivity=now, deadline=now + ABSOLUTE_TRANSFER_TIMEOUT, requestID=requestID}
     SendAddonMessage(PREFIX, "Q|"..requestID, "WHISPER", clean)
     self.viewMessages[key] = L.pending
     self:RefreshUI()
+    return true
 end
 
 function Sync:OnAddonMessage(prefix, message, channel, sender)
@@ -644,6 +721,22 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
     if not cleanSender or not self:IsGuildMember(cleanSender) then return end
     local fields = Split(message, "|")
     local command, requestID = fields[1], fields[2]
+
+    if command == "H" or command == "U" or command == "A" then
+        if #fields ~= 2 then return end
+        local advertisedAt = tonumber(requestID)
+        if not IsInteger(advertisedAt, 0, time() + 3600) or IsOwn(cleanSender) then return end
+        if command == "H" and channel == "GUILD" then
+            self:Announce("A", cleanSender)
+            if advertisedAt > 0 then self:QueueAutoRequest(cleanSender, advertisedAt) end
+        elseif command == "U" and channel == "GUILD" then
+            self:QueueAutoRequest(cleanSender, advertisedAt)
+        elseif command == "A" and channel == "WHISPER" then
+            self:QueueAutoRequest(cleanSender, advertisedAt)
+        end
+        return
+    end
+
     if not requestID or #requestID > 12 or not requestID:match("^%d+$") then return end
 
     if command == "Q" and channel == "WHISPER" then
@@ -710,6 +803,7 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
         entry.displayName = cleanSender
         entry.receivedAt = time()
         self.db.players[playerKey] = entry
+        self.autoLastRequest[pendingKey] = nil
         local cached = {}
         for key, value in pairs(self.db.players) do cached[#cached + 1] = {key=key, receivedAt=tonumber(value.receivedAt) or 0} end
         table.sort(cached, function(a, b) return a.receivedAt < b.receivedAt end)
@@ -725,30 +819,50 @@ end
 ---------------------------------------------------------------------------
 -- Benutzeroberflaeche
 ---------------------------------------------------------------------------
-function Sync:SelectPlayer(member)
-    self.selectedName = member and member.name or nil
-    if self.detailScroll then FauxScrollFrame_SetOffset(self.detailScroll, 0) end
-    self:RefreshUI()
-end
-
 local function ContainsFolded(value, needle)
     return needle == "" or Fold(value):find(needle, 1, true) ~= nil
+end
+
+local function ProfessionCategoryKey(name, profession)
+    local _, _, _, _, spellID = ParseTradeLink(profession and profession.tradeLink)
+    return spellID and ("spell:"..spellID) or ("name:"..Fold(name)), spellID
+end
+
+local function ProfessionIsStale(profession)
+    local stamp = profession and tonumber(profession.capturedAt)
+    return stamp and time() - stamp > 7 * 86400 or false
 end
 
 function Sync:BuildPlayerList()
     local needle = self.playerSearch and Fold(self.playerSearch:GetText()) or ""
     local categories, synchronized = {}, {}
-    local function Add(categoryName, member, order, countSynchronized)
-        local key = Fold(categoryName)
+    local onlineFilter = self.onlineFilter or "all"
+    local ageFilter = self.ageFilter or "all"
+    local function MemberAllowed(member)
+        return onlineFilter == "all" or onlineFilter == "online" and member.online
+            or onlineFilter == "offline" and not member.online
+    end
+    local function Add(categoryKey, categoryName, member, profession, spellID, order, countSynchronized)
+        if not MemberAllowed(member) then return end
+        if profession then
+            local stale = ProfessionIsStale(profession)
+            if ageFilter == "current" and stale or ageFilter == "stale" and not stale then return end
+        elseif ageFilter ~= "all" then
+            return
+        end
+        local key = categoryKey
         local category = categories[key]
         if not category then
-            category = {name=categoryName, order=order, members={}, memberKeys={}}
+            category = {key=key, name=categoryName, spellID=spellID, order=order, members={}, memberKeys={}, onlineCount=0}
             categories[key] = category
+        elseif Fold(categoryName) < Fold(category.name) then
+            category.name = categoryName
         end
         local memberKey = KeyName(member.name)
         if memberKey and not category.memberKeys[memberKey] then
             category.memberKeys[memberKey] = true
-            category.members[#category.members + 1] = member
+            category.members[#category.members + 1] = {member=member, profession=profession, professionName=categoryName}
+            if member.online then category.onlineCount = category.onlineCount + 1 end
             if countSynchronized ~= false then synchronized[memberKey] = true end
         end
     end
@@ -759,14 +873,19 @@ function Sync:BuildPlayerList()
         local hasData = false
         if data then
             for professionName, profession in pairs(data.professions or {}) do
-                if memberMatch or ContainsFolded(professionName, needle) then
-                    Add(professionName, member, 1, true)
+                local tradeLink = type(profession) == "table" and SafeTradeLink(profession.tradeLink)
+                if tradeLink then
+                    hasData = true
+                    local professionMatch = ContainsFolded(professionName, needle)
+                    if memberMatch or professionMatch then
+                        local categoryKey, spellID = ProfessionCategoryKey(professionName, profession)
+                        Add(categoryKey, professionName, member, profession, spellID, 1, true)
+                    end
                 end
-                hasData = true
             end
         end
         if not hasData and memberMatch then
-            Add(L.notSynchronized, member, 2, false)
+            Add("unsynchronized", L.notSynchronized, member, nil, nil, 2, false)
         end
     end
 
@@ -778,14 +897,33 @@ function Sync:BuildPlayerList()
     end)
 
     local list = {}
+    self.categoryKeys = {}
+    self.expandedProfessions = self.expandedProfessions or {}
+    if not self.expansionInitialized and needle == "" then
+        for _, category in ipairs(orderedCategories) do
+            if category.order == 1 then self.expandedProfessions[category.key] = true break end
+        end
+        self.expansionInitialized = true
+    end
     for _, category in ipairs(orderedCategories) do
         table.sort(category.members, function(a, b)
-            if a.online ~= b.online then return a.online and true or false end
-            return Fold(a.name) < Fold(b.name)
+            if a.member.online ~= b.member.online then return a.member.online and true or false end
+            return Fold(a.member.name) < Fold(b.member.name)
         end)
-        list[#list + 1] = {header=true, category=category.name, count=#category.members}
-        for _, member in ipairs(category.members) do
-            list[#list + 1] = {member=member, category=category.name}
+        self.categoryKeys[#self.categoryKeys + 1] = category.key
+        local expanded = needle ~= "" or self.expandedProfessions[category.key]
+        list[#list + 1] = {
+            header=true, categoryKey=category.key, category=category.name,
+            count=#category.members, onlineCount=category.onlineCount,
+            expanded=expanded and true or false, spellID=category.spellID,
+        }
+        if expanded then
+            for _, value in ipairs(category.members) do
+                list[#list + 1] = {
+                    member=value.member, profession=value.profession,
+                    professionName=value.professionName, categoryKey=category.key,
+                }
+            end
         end
     end
     local playerCount = 0
@@ -794,34 +932,120 @@ function Sync:BuildPlayerList()
     self.playerList = list
 end
 
+function Sync:ToggleCategory(categoryKey)
+    if not categoryKey then return end
+    if self.playerSearch and self.playerSearch:GetText() ~= "" then return end
+    self.expandedProfessions = self.expandedProfessions or {}
+    self.expandedProfessions[categoryKey] = not self.expandedProfessions[categoryKey]
+    self:RefreshPlayers()
+end
+
+function Sync:SetAllCategories(expanded)
+    self.expandedProfessions = self.expandedProfessions or {}
+    for _, key in ipairs(self.categoryKeys or {}) do self.expandedProfessions[key] = expanded and true or nil end
+    self:RefreshPlayers()
+end
+
+function Sync:UpdateExpandButton()
+    if not self.expandButton then return end
+    local anyExpanded = false
+    for _, key in ipairs(self.categoryKeys or {}) do
+        if self.expandedProfessions and self.expandedProfessions[key] then anyExpanded = true break end
+    end
+    self.expandButton:SetText(anyExpanded and L.closeAll or L.openAll)
+    self.expandButton.expandNext = not anyExpanded
+end
+
 function Sync:RefreshPlayers()
     if not self.panel then return end
     self:BuildPlayerList()
-    local offset = FauxScrollFrame_GetOffset(self.playerScroll)
     FauxScrollFrame_Update(self.playerScroll, #self.playerList, #self.playerRows, 42)
-    self.playerCount:SetText(format(L.synchronized, self.playerMatchCount or 0))
+    local maximumOffset = math.max(0, #self.playerList - #self.playerRows)
+    local offset = math.min(FauxScrollFrame_GetOffset(self.playerScroll), maximumOffset)
+    FauxScrollFrame_SetOffset(self.playerScroll, offset)
+    self.playerCount:SetText(format(L.synchronized, self.playerMatchCount or 0).."  ·  "..L.syncActive)
+    self:UpdateExpandButton()
+    if self.emptyText then
+        if #self.playerList == 0 then self.emptyText:SetText(L.noResults); self.emptyText:Show() else self.emptyText:Hide() end
+    end
     for index, row in ipairs(self.playerRows) do
         local entry = self.playerList[index + offset]
         local member = entry and entry.member
+        row.entry = entry
+        row.member = nil
+        row.tradeLink = nil
+        row.categoryKey = nil
+        row.icon:Hide()
+        row.statusDot:Hide()
+        row.toggle:SetText("")
+        row.name:SetText("")
+        row.rank:SetText("")
+        row.link:SetText("")
+        row.skill:SetText("")
+        row.age:SetText("")
+        row.status:SetText("")
+        row.rowSelected = false
         if entry and entry.header then
-            row.member = nil
+            row.categoryKey = entry.categoryKey
+            row.toggle:SetText(entry.expanded and "-" or "+")
             row.name:SetText(entry.category)
-            row.name:SetTextColor(0.35, 0.72, 1)
-            row.rank:SetText(format(L.categoryPlayers, entry.count or 0))
-            row.statusDot:Hide()
-            row.rowSelected = false
+            row.name:SetTextColor(0.88, 0.93, 0.97)
+            row.rank:SetText(format(L.onlineCount, entry.count or 0, entry.onlineCount or 0))
+            row.icon:Show()
+            local texture
+            if entry.spellID and type(GetSpellInfo) == "function" then
+                local _, _, spellTexture = GetSpellInfo(entry.spellID)
+                texture = spellTexture
+            end
+            if not texture and entry.spellID and type(GetSpellTexture) == "function" then
+                texture = GetSpellTexture(entry.spellID)
+            end
+            row.icon:SetTexture(texture or "Interface\\Icons\\INV_Misc_QuestionMark")
             row.rowAlternate = false
+            row.rowSelected = entry.expanded
             PaintPlayerRow(row, false)
             row:Show()
         elseif member then
             row.member = member
+            row.tradeLink = entry.profession and entry.profession.tradeLink or nil
             row.name:SetText(member.name)
             row.name:SetTextColor(member.online and 0.93 or 0.66, member.online and 0.96 or 0.71, member.online and 0.99 or 0.77)
             local statusText = member.online and (FRIENDS_LIST_ONLINE or "Online") or (FRIENDS_LIST_OFFLINE or "Offline")
             row.rank:SetText(((member.rank and member.rank ~= "") and (member.rank.."  ·  ") or "")..statusText)
             row.statusDot:Show()
             SetTextureColor(row.statusDot, member.online and {0.25, 0.84, 0.51, 1} or {0.34, 0.40, 0.47, 1})
-            row.rowSelected = KeyName(member.name) == KeyName(self.selectedName)
+            if entry.profession then
+                row.link:SetText(entry.profession.tradeLink or ("["..entry.professionName.."]"))
+                row.link:SetTextColor(1, 0.82, 0.24)
+                row.skill:SetText((entry.profession.skill or 0).." / "..(entry.profession.maxSkill or 0))
+                row.age:SetText(AgeText(entry.profession.capturedAt))
+                local memberKey = KeyName(member.name)
+                local message = self.pending[memberKey] and L.pending or self.viewMessages[memberKey]
+                if message then
+                    row.status:SetText(message)
+                    row.status:SetTextColor(UI_COLOR.borderFocus[1], UI_COLOR.borderFocus[2], UI_COLOR.borderFocus[3])
+                elseif not member.online then
+                    row.status:SetText(L.offlineCache)
+                    row.status:SetTextColor(UI_COLOR.muted[1], UI_COLOR.muted[2], UI_COLOR.muted[3])
+                elseif ProfessionIsStale(entry.profession) then
+                    row.status:SetText(L.stale)
+                    row.status:SetTextColor(UI_COLOR.warn[1], UI_COLOR.warn[2], UI_COLOR.warn[3])
+                else
+                    row.status:SetText(L.current)
+                    row.status:SetTextColor(UI_COLOR.good[1], UI_COLOR.good[2], UI_COLOR.good[3])
+                end
+            else
+                row.skill:SetText("—")
+                row.age:SetText(L.never)
+                local memberKey = KeyName(member.name)
+                if self.pending[memberKey] then row.status:SetText(L.pending)
+                elseif IsOwn(member.name) then row.status:SetText(L.capture)
+                elseif member.online then row.status:SetText(L.requestShort)
+                else row.status:SetText(FRIENDS_LIST_OFFLINE or "Offline") end
+                local actionable = member.online or IsOwn(member.name)
+                local color = actionable and UI_COLOR.borderFocus or UI_COLOR.muted
+                row.status:SetTextColor(color[1], color[2], color[3])
+            end
             row.rowAlternate = (index + offset) % 2 == 0
             PaintPlayerRow(row, row.rowAlternate)
             row:Show()
@@ -832,112 +1056,13 @@ function Sync:RefreshPlayers()
     end
 end
 
-function Sync:BuildDetailRows()
-    local rows = {}
-    local data = self:GetPlayerData(self.selectedName)
-    local needle = self.detailSearch and Fold(self.detailSearch:GetText()) or ""
-    if data and data.professions then
-        local professionNames = {}
-        for name in pairs(data.professions) do professionNames[#professionNames + 1] = name end
-        table.sort(professionNames)
-        local matchCount = 0
-        for _, professionName in ipairs(professionNames) do
-            local profession = data.professions[professionName]
-            if needle == "" or Fold(professionName):find(needle, 1, true) then
-                local detail = (profession.skill or 0).." / "..(profession.maxSkill or 0).." · "..format(L.lastCaptured, AgeText(profession.capturedAt))
-                rows[#rows + 1] = {text=profession.tradeLink or ("["..professionName.."]"), detail=detail, tradeLink=profession.tradeLink}
-                matchCount = matchCount + 1
-            end
-        end
-        self.summary:SetText(matchCount > 0 and format(L.professionCount, matchCount) or "")
-        self.emptyMessage = matchCount == 0 and L.noProfessions or nil
-    else
-        self.summary:SetText("")
-        self.emptyMessage = L.noData
-    end
-    self.detailList = rows
-end
-
-function Sync:RefreshDetails()
-    if not self.panel then return end
-    local member = self:GetMember(self.selectedName)
-    if not member then
-        self.detailName:SetText(L.noSelection)
-        self.detailMeta:SetText("")
-        self.ageText:SetText("")
-        self.ageText:SetTextColor(UI_COLOR.muted[1], UI_COLOR.muted[2], UI_COLOR.muted[3])
-        self.summary:SetText("")
-        self.requestButton:Disable()
-        self.detailList = {}
-        self.emptyMessage = L.noSelection
-    else
-        self.detailName:SetText(member.name)
-        self.detailMeta:SetText((member.rank or "").."  ·  "..(member.online and (FRIENDS_LIST_ONLINE or "Online") or L.offline))
-        local viewKey = KeyName(member.name)
-        if (member.online or IsOwn(member.name)) and not self.pending[viewKey] then self.requestButton:Enable() else self.requestButton:Disable() end
-        self.requestButton:SetText(self.pending[viewKey] and L.pending or IsOwn(member.name) and L.capture or L.request)
-        self:BuildDetailRows()
-        local data = self:GetPlayerData(member.name)
-        local stamp = data and data.professionsCapturedAt or nil
-        local state = stamp and format(L.fresh, AgeText(stamp)) or L.never
-        if stamp and time() - stamp > 7 * 86400 then state = L.stale.." · "..state end
-        if self.viewMessages[viewKey] then state = self.viewMessages[viewKey] end
-        self.ageText:SetText(state)
-        if self.pending[viewKey] then
-            self.ageText:SetTextColor(UI_COLOR.borderFocus[1], UI_COLOR.borderFocus[2], UI_COLOR.borderFocus[3])
-        elseif self.viewMessages[viewKey] == L.timeout or self.viewMessages[viewKey] == L.denied then
-            self.ageText:SetTextColor(UI_COLOR.error[1], UI_COLOR.error[2], UI_COLOR.error[3])
-        elseif stamp and time() - stamp <= 7 * 86400 then
-            self.ageText:SetTextColor(UI_COLOR.good[1], UI_COLOR.good[2], UI_COLOR.good[3])
-        elseif stamp then
-            self.ageText:SetTextColor(UI_COLOR.warn[1], UI_COLOR.warn[2], UI_COLOR.warn[3])
-        else
-            self.ageText:SetTextColor(UI_COLOR.muted[1], UI_COLOR.muted[2], UI_COLOR.muted[3])
-        end
-    end
-    local rowHeight = 48
-    self.detailRowHeight = rowHeight
-    for index, row in ipairs(self.detailRows) do
-        row:SetHeight(rowHeight)
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", self.detailScroll, "TOPLEFT", 0, -(index - 1) * rowHeight)
-        row:SetPoint("RIGHT", self.detailScroll, "RIGHT", -23, 0)
-    end
-    local offset = FauxScrollFrame_GetOffset(self.detailScroll)
-    FauxScrollFrame_Update(self.detailScroll, #self.detailList, #self.detailRows, rowHeight)
-    if self.emptyText then
-        if #self.detailList == 0 then
-            self.emptyText:SetText(self.emptyMessage or L.noData)
-            self.emptyText:Show()
-        else
-            self.emptyText:Hide()
-        end
-    end
-    for index, row in ipairs(self.detailRows) do
-        local value = self.detailList[index + offset]
-        if value then
-            row.value = value
-            row.text:SetText(value.text)
-            row.detail:SetText(value.detail or "")
-            if value.tradeLink then row.text:SetTextColor(1, 0.82, 0.24)
-            else row.text:SetTextColor(0.88, 0.92, 0.96) end
-            row.detail:SetTextColor(value.tradeLink and 0.69 or 0.58, value.tradeLink and 0.76 or 0.66, value.tradeLink and 0.82 or 0.73)
-            row.rowAlternate = (index + offset) % 2 == 0
-            PaintDetailRow(row, row.rowAlternate)
-            row:Show()
-        else row.value = nil; row:Hide() end
-    end
-end
-
 function Sync:RefreshUI()
     if not self.panel then return end
     self:RefreshPlayers()
-    self:RefreshDetails()
 end
 
 function Sync:SetMainTab(tab)
     if self.playerSearch then self.playerSearch:ClearFocus() end
-    if self.detailSearch then self.detailSearch:ClearFocus() end
     if GVE.searchBox then GVE.searchBox:ClearFocus() end
     if tab == "sync" then
         self.header:ClearAllPoints()
@@ -946,8 +1071,9 @@ function Sync:SetMainTab(tab)
         self.header:SetHeight(48)
         self.closeButton:Show()
         self.headerTitle:Show()
-        if GVE.filterPanel then GVE.filterPanel:Hide() end
+        if GVE.CloseFilterPanel then GVE:CloseFilterPanel() end
         if GVE.lastOnlineWin then GVE.lastOnlineWin:Hide() end
+        if GVE.logPanel then GVE.logPanel:Hide() end
         if GVE.detail then GVE.detail:Hide() end
         if GuildControlPopupFrame and GuildControlPopupFrame:IsShown() then GuildControlPopupFrame:Hide() end
         self.panel:Show()
@@ -960,9 +1086,10 @@ function Sync:SetMainTab(tab)
         self.panel:Hide()
         self.header:ClearAllPoints()
         self.header:SetPoint("TOPLEFT", GVE.f, "TOPLEFT", 10, -5)
-        self.header:SetSize(309, 28)
-        self.closeButton:Hide()
-        self.headerTitle:Hide()
+        self.header:SetPoint("TOPRIGHT", GVE.f, "TOPRIGHT", -10, -5)
+        self.header:SetHeight(48)
+        self.closeButton:Show()
+        self.headerTitle:Show()
         self.membersTab:Disable()
         self.syncTab:Enable()
         SetFlatSelected(self.membersTab, true)
@@ -1027,92 +1154,134 @@ function Sync:BuildUI()
     footer:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 8, 8); footer:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -8, 8); footer:SetHeight(32)
     MakeFlatPanel(footer, UI_COLOR.section)
 
-    local left = CreateFrame("Frame", nil, panel)
-    left:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -8); left:SetPoint("BOTTOMLEFT", footer, "TOPLEFT", 0, 8)
-    left:SetWidth(310); left:EnableMouse(true); MakeFlatPanel(left, UI_COLOR.section)
+    -- Berufsuebersicht als vollbreite, aufklappbare Tabelle. Ein flaches
+    -- Zeilenmodell haelt die Scroll-Logik auch auf dem 3.3.5a-Client stabil.
+    local content = CreateFrame("Frame", nil, panel)
+    content:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -8)
+    content:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", 0, 8)
+    content:EnableMouse(true)
+    MakeFlatPanel(content, UI_COLOR.section)
 
-    local leftTitle = left:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    leftTitle:SetPoint("TOPLEFT", left, "TOPLEFT", 13, -12); leftTitle:SetText(L.members); leftTitle:SetTextColor(0.78, 0.88, 0.95)
-
-    local search = MakeFlatSearch(left, 268, 26)
-    search:SetPoint("TOPLEFT", left, "TOPLEFT", 12, -35)
-    search:SetMaxLetters(40)
-    search:SetScript("OnTextChanged", function() if Sync.playerScroll then FauxScrollFrame_SetOffset(Sync.playerScroll, 0) end; Sync:RefreshPlayers() end)
+    local search = MakeFlatSearch(content, 350, 26)
+    search:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -12)
+    search:SetMaxLetters(60)
+    search:SetScript("OnTextChanged", function()
+        if Sync.playerScroll then FauxScrollFrame_SetOffset(Sync.playerScroll, 0) end
+        Sync:RefreshPlayers()
+    end)
     search:SetScript("OnEscapePressed", search.ClearFocus)
     self.playerSearch = search
-    local placeholder = left:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    placeholder:SetPoint("LEFT", search, "LEFT", 9, 0); placeholder:SetText(L.search); placeholder:SetTextColor(0.42, 0.52, 0.61)
+    local placeholder = content:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    placeholder:SetPoint("LEFT", search, "LEFT", 9, 0)
+    placeholder:SetText(L.search)
+    placeholder:SetTextColor(0.42, 0.52, 0.61)
     search:HookScript("OnEditFocusGained", function() placeholder:Hide() end)
     search:HookScript("OnEditFocusLost", function(self) if self:GetText() == "" then placeholder:Show() end end)
     search:HookScript("OnTextChanged", function(self) if self:GetText() ~= "" then placeholder:Hide() end end)
 
-    self.playerCount = left:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    self.playerCount:SetPoint("TOPLEFT", search, "BOTTOMLEFT", 2, -8); self.playerCount:SetTextColor(0.49, 0.63, 0.73)
+    local onlineButton = MakeFlatButton(content, 112, 26, L.allPlayers)
+    onlineButton:SetPoint("LEFT", search, "RIGHT", 8, 0)
+    onlineButton:SetScript("OnClick", function(self)
+        local nextValue = {all="online", online="offline", offline="all"}
+        Sync.onlineFilter = nextValue[Sync.onlineFilter or "all"]
+        self:SetText(Sync.onlineFilter == "online" and L.onlineOnly or Sync.onlineFilter == "offline" and L.offlineOnly or L.allPlayers)
+        FauxScrollFrame_SetOffset(Sync.playerScroll, 0)
+        Sync:RefreshPlayers()
+    end)
+
+    local ageButton = MakeFlatButton(content, 112, 26, L.allData)
+    ageButton:SetPoint("LEFT", onlineButton, "RIGHT", 6, 0)
+    ageButton:SetScript("OnClick", function(self)
+        local nextValue = {all="current", current="stale", stale="all"}
+        Sync.ageFilter = nextValue[Sync.ageFilter or "all"]
+        self:SetText(Sync.ageFilter == "current" and L.currentOnly or Sync.ageFilter == "stale" and L.staleOnly or L.allData)
+        FauxScrollFrame_SetOffset(Sync.playerScroll, 0)
+        Sync:RefreshPlayers()
+    end)
+
+    local expandButton = MakeFlatButton(content, 116, 26, L.openAll)
+    expandButton:SetPoint("TOPRIGHT", content, "TOPRIGHT", -12, -12)
+    expandButton:SetScript("OnClick", function(self) Sync:SetAllCategories(self.expandNext) end)
+    self.expandButton = expandButton
+
+    self.playerCount = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.playerCount:SetPoint("TOPLEFT", search, "BOTTOMLEFT", 2, -7)
+    self.playerCount:SetTextColor(0.49, 0.63, 0.73)
+
+    local tableHeader = CreateFrame("Frame", nil, content)
+    tableHeader:SetPoint("TOPLEFT", content, "TOPLEFT", 8, -66)
+    tableHeader:SetPoint("TOPRIGHT", content, "TOPRIGHT", -25, -66)
+    tableHeader:SetHeight(25)
+    MakeFlatPanel(tableHeader, UI_COLOR.field)
+    local function HeaderLabel(text, x, width)
+        local label = tableHeader:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        label:SetPoint("LEFT", tableHeader, "LEFT", x, 0)
+        label:SetWidth(width); label:SetJustifyH("LEFT"); label:SetWordWrap(false)
+        label:SetText(text); label:SetTextColor(0.56, 0.68, 0.77)
+        return label
+    end
+    HeaderLabel(L.columnPlayer, 50, 210)
+    HeaderLabel(L.columnLink, 270, 245)
+    HeaderLabel(L.columnSkill, 525, 92)
+    HeaderLabel(L.columnAge, 625, 112)
+    HeaderLabel(L.columnStatus, 745, 175)
 
     self.playerRows = {}
     for index = 1, 10 do
-        local row = CreateFrame("Button", nil, left)
-        row:SetHeight(42); row:SetPoint("TOPLEFT", left, "TOPLEFT", 8, -82 - (index - 1) * 42); row:SetPoint("RIGHT", left, "RIGHT", -25, 0)
+        local row = CreateFrame("Button", nil, content)
+        row:SetHeight(42)
+        row:SetPoint("TOPLEFT", content, "TOPLEFT", 8, -94 - (index - 1) * 42)
+        row:SetPoint("RIGHT", content, "RIGHT", -25, 0)
         row.bg = row:CreateTexture(nil, "BACKGROUND"); row.bg:SetAllPoints()
         row.selectionBar = row:CreateTexture(nil, "ARTWORK"); row.selectionBar:SetWidth(3); row.selectionBar:SetPoint("TOPLEFT"); row.selectionBar:SetPoint("BOTTOMLEFT"); SetTextureColor(row.selectionBar, UI_COLOR.borderFocus); row.selectionBar:Hide()
-        row.statusDot = row:CreateTexture(nil, "ARTWORK"); row.statusDot:SetSize(6, 6); row.statusDot:SetPoint("LEFT", row, "LEFT", 10, 0)
-        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal"); row.name:SetPoint("TOPLEFT", row, "TOPLEFT", 22, -6); row.name:SetWidth(235); row.name:SetJustifyH("LEFT"); row.name:SetWordWrap(false)
-        row.rank = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall"); row.rank:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 22, 6); row.rank:SetWidth(235); row.rank:SetJustifyH("LEFT"); row.rank:SetWordWrap(false); row.rank:SetTextColor(0.47, 0.57, 0.65)
-        row:SetScript("OnClick", function(self) if self.member then Sync:SelectPlayer(self.member) end end)
-        row:SetScript("OnEnter", function(self) self.rowHover = true; PaintPlayerRow(self, self.rowAlternate) end)
-        row:SetScript("OnLeave", function(self) self.rowHover = nil; PaintPlayerRow(self, self.rowAlternate) end)
+        row.toggle = row:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"); row.toggle:SetPoint("LEFT", row, "LEFT", 8, 0); row.toggle:SetWidth(15); row.toggle:SetJustifyH("CENTER"); row.toggle:SetTextColor(0.55, 0.75, 0.9)
+        row.icon = row:CreateTexture(nil, "ARTWORK"); row.icon:SetSize(22, 22); row.icon:SetPoint("LEFT", row, "LEFT", 27, 0); row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        row.statusDot = row:CreateTexture(nil, "OVERLAY"); row.statusDot:SetSize(6, 6); row.statusDot:SetPoint("LEFT", row, "LEFT", 53, 0)
+        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal"); row.name:SetPoint("TOPLEFT", row, "TOPLEFT", 64, -6); row.name:SetWidth(196); row.name:SetJustifyH("LEFT"); row.name:SetWordWrap(false)
+        row.rank = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall"); row.rank:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 64, 6); row.rank:SetWidth(196); row.rank:SetJustifyH("LEFT"); row.rank:SetWordWrap(false); row.rank:SetTextColor(0.47, 0.57, 0.65)
+        row.link = row:CreateFontString(nil, "OVERLAY", "GameFontNormal"); row.link:SetPoint("LEFT", row, "LEFT", 270, 0); row.link:SetWidth(245); row.link:SetJustifyH("LEFT"); row.link:SetWordWrap(false)
+        row.skill = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); row.skill:SetPoint("LEFT", row, "LEFT", 525, 0); row.skill:SetWidth(92); row.skill:SetJustifyH("LEFT"); row.skill:SetWordWrap(false); row.skill:SetTextColor(0.72, 0.78, 0.83)
+        row.age = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); row.age:SetPoint("LEFT", row, "LEFT", 625, 0); row.age:SetWidth(112); row.age:SetJustifyH("LEFT"); row.age:SetWordWrap(false); row.age:SetTextColor(0.63, 0.7, 0.76)
+        row.status = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); row.status:SetPoint("LEFT", row, "LEFT", 745, 0); row.status:SetPoint("RIGHT", row, "RIGHT", -8, 0); row.status:SetJustifyH("LEFT"); row.status:SetWordWrap(false)
+        row:SetScript("OnClick", function(self)
+            if self.entry and self.entry.header then
+                Sync:ToggleCategory(self.categoryKey)
+            elseif self.tradeLink then
+                OpenTradeLink(self.tradeLink)
+            elseif self.member and (self.member.online or IsOwn(self.member.name)) then
+                Sync:Request(self.member.name)
+            end
+        end)
+        row:SetScript("OnEnter", function(self)
+            self.rowHover = true; PaintPlayerRow(self, self.rowAlternate)
+            if self.tradeLink then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText(L.clickToOpen); GameTooltip:Show()
+            elseif self.member and (self.member.online or IsOwn(self.member.name)) then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText(IsOwn(self.member.name) and L.capture or L.request); GameTooltip:Show()
+            end
+        end)
+        row:SetScript("OnLeave", function(self) self.rowHover = nil; PaintPlayerRow(self, self.rowAlternate); GameTooltip:Hide() end)
         self.playerRows[index] = row
     end
-    local ps = CreateFrame("ScrollFrame", "GVESyncPlayerScroll", left, "FauxScrollFrameTemplate")
-    ps:SetPoint("TOPLEFT", left, "TOPLEFT", 8, -82); ps:SetPoint("BOTTOMRIGHT", left, "BOTTOMRIGHT", -7, 0)
+    local ps = CreateFrame("ScrollFrame", "GVESyncPlayerScroll", content, "FauxScrollFrameTemplate")
+    ps:SetPoint("TOPLEFT", content, "TOPLEFT", 8, -94)
+    ps:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", -7, 4)
     ps:SetScript("OnVerticalScroll", function(self, offset) FauxScrollFrame_OnVerticalScroll(self, offset, 42, function() Sync:RefreshPlayers() end) end)
     ps:EnableMouseWheel(true)
     ps:SetScript("OnMouseWheel", function(self, delta) local bar = _G[(self:GetName() or "").."ScrollBar"]; if bar then bar:SetValue(bar:GetValue() - delta * 42) end end)
+    -- Der FauxScrollFrame verarbeitet nur Scrollen; die sichtbaren Zeilen
+    -- bleiben darueber anklickbar (Aufklappen, Berufslink, Datenanfrage).
+    for _, row in ipairs(self.playerRows) do row:SetFrameLevel(ps:GetFrameLevel() + 1) end
     self.playerScroll = ps
-
-    local right = CreateFrame("Frame", nil, panel)
-    right:SetPoint("TOPLEFT", left, "TOPRIGHT", 10, 0); right:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", 0, 8)
-    right:EnableMouse(true); MakeFlatPanel(right, UI_COLOR.section)
-
-    local identity = CreateFrame("Frame", nil, right)
-    identity:SetPoint("TOPLEFT", right, "TOPLEFT", 10, -10); identity:SetPoint("TOPRIGHT", right, "TOPRIGHT", -10, -10); identity:SetHeight(50)
-    MakeFlatPanel(identity, UI_COLOR.field)
-    self.detailName = identity:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"); self.detailName:SetPoint("TOPLEFT", identity, "TOPLEFT", 13, -9); self.detailName:SetText(L.noSelection); self.detailName:SetTextColor(0.91, 0.96, 1)
-    self.detailMeta = identity:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); self.detailMeta:SetPoint("TOPLEFT", self.detailName, "BOTTOMLEFT", 0, -3); self.detailMeta:SetTextColor(0.52, 0.64, 0.73)
-    self.requestButton = MakeFlatButton(identity, 132, 25, L.request, true); self.requestButton:SetPoint("TOPRIGHT", identity, "TOPRIGHT", -10, -8)
-    self.requestButton:SetScript("OnClick", function() if Sync.selectedName then Sync:Request(Sync.selectedName) end end)
-    self.ageText = identity:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); self.ageText:SetPoint("TOPRIGHT", self.requestButton, "BOTTOMRIGHT", 0, -4); self.ageText:SetWidth(310); self.ageText:SetJustifyH("RIGHT"); self.ageText:SetTextColor(0.78, 0.69, 0.39)
-    local identityLine = right:CreateTexture(nil, "ARTWORK"); identityLine:SetHeight(1); identityLine:SetPoint("TOPLEFT", identity, "BOTTOMLEFT", 0, -5); identityLine:SetPoint("TOPRIGHT", identity, "BOTTOMRIGHT", 0, -5); SetTextureColor(identityLine, UI_COLOR.border)
-
-    local professionTitle = right:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    professionTitle:SetPoint("TOPLEFT", right, "TOPLEFT", 13, -78)
-    professionTitle:SetText(L.professions); professionTitle:SetTextColor(0.78, 0.88, 0.95)
-
-    local ds = MakeFlatSearch(right, 285, 26); ds:SetPoint("TOPLEFT", right, "TOPLEFT", 12, -105); ds:SetMaxLetters(60); ds:SetScript("OnTextChanged", function() if Sync.detailScroll then FauxScrollFrame_SetOffset(Sync.detailScroll, 0) end; Sync:RefreshDetails() end); ds:SetScript("OnEscapePressed", ds.ClearFocus); self.detailSearch = ds
-    local detailPlaceholder = right:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall"); detailPlaceholder:SetPoint("LEFT", ds, "LEFT", 9, 0); detailPlaceholder:SetText(L.professionSearch); detailPlaceholder:SetTextColor(0.42, 0.52, 0.61); self.detailPlaceholder = detailPlaceholder
-    ds:HookScript("OnEditFocusGained", function() detailPlaceholder:Hide() end)
-    ds:HookScript("OnEditFocusLost", function(self) if self:GetText() == "" then detailPlaceholder:Show() end end)
-    ds:HookScript("OnTextChanged", function(self) if self:GetText() ~= "" then detailPlaceholder:Hide() end end)
-    self.summary = right:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); self.summary:SetPoint("LEFT", ds, "RIGHT", 13, 0); self.summary:SetTextColor(0.49, 0.63, 0.73)
-
-    self.detailRows = {}
-    for index = 1, 7 do
-        local row = CreateFrame("Button", nil, right); row:SetHeight(29); row:SetPoint("TOPLEFT", right, "TOPLEFT", 12, -140 - (index - 1) * 29); row:SetPoint("RIGHT", right, "RIGHT", -30, 0)
-        row.bg = row:CreateTexture(nil, "BACKGROUND"); row.bg:SetAllPoints()
-        row.text = row:CreateFontString(nil, "OVERLAY", "GameFontNormal"); row.text:SetPoint("LEFT", row, "LEFT", 9, 0); row.text:SetPoint("RIGHT", row, "RIGHT", -148, 0); row.text:SetJustifyH("LEFT"); row.text:SetWordWrap(false)
-        row.detail = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); row.detail:SetPoint("RIGHT", row, "RIGHT", -8, 0); row.detail:SetTextColor(0.62, 0.68, 0.74)
-        row:SetScript("OnClick", function(self) if self.value and self.value.tradeLink then OpenTradeLink(self.value.tradeLink) end end)
-        row:SetScript("OnEnter", function(self) self.rowHover = true; PaintDetailRow(self, self.rowAlternate); if self.value and self.value.tradeLink then GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText(L.clickToOpen); GameTooltip:Show() end end)
-        row:SetScript("OnLeave", function(self) self.rowHover = nil; PaintDetailRow(self, self.rowAlternate); GameTooltip:Hide() end)
-        self.detailRows[index] = row
-    end
-    local detailScroll = CreateFrame("ScrollFrame", "GVESyncDetailScroll", right, "FauxScrollFrameTemplate"); detailScroll:SetPoint("TOPLEFT", right, "TOPLEFT", 12, -140); detailScroll:SetPoint("BOTTOMRIGHT", right, "BOTTOMRIGHT", -7, 8); detailScroll:SetScript("OnVerticalScroll", function(self, offset) FauxScrollFrame_OnVerticalScroll(self, offset, Sync.detailRowHeight or 48, function() Sync:RefreshDetails() end) end); detailScroll:EnableMouseWheel(true); detailScroll:SetScript("OnMouseWheel", function(self, delta) local bar = _G[(self:GetName() or "").."ScrollBar"]; if bar then bar:SetValue(bar:GetValue() - delta * (Sync.detailRowHeight or 48)) end end); self.detailScroll = detailScroll
-    self.emptyText = right:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    self.emptyText:SetPoint("CENTER", detailScroll, "CENTER", -8, 4); self.emptyText:SetWidth(420); self.emptyText:SetJustifyH("CENTER"); self.emptyText:SetTextColor(0.48, 0.58, 0.67); self.emptyText:Hide()
+    self.emptyText = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    self.emptyText:SetPoint("CENTER", ps, "CENTER", -8, 0); self.emptyText:SetWidth(500); self.emptyText:SetJustifyH("CENTER"); self.emptyText:SetTextColor(0.48, 0.58, 0.67); self.emptyText:Hide()
 
     local help = footer:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); help:SetPoint("LEFT", footer, "LEFT", 10, 0); help:SetWidth(405); help:SetJustifyH("LEFT"); help:SetText(L.footerShort); help:SetTextColor(0.48, 0.58, 0.67)
     local helpButton = MakeFlatButton(footer, 22, 20, "?"); helpButton:SetPoint("LEFT", help, "RIGHT", 6, 0); helpButton:HookScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText(L.help, 0.88, 0.93, 0.98, true); GameTooltip:Show() end); helpButton:HookScript("OnLeave", function() GameTooltip:Hide() end)
-    local shareP = MakeCheck(footer, L.shareP); shareP:SetPoint("RIGHT", footer, "RIGHT", -150, 0); shareP:SetChecked(self.db.settings.shareProfessions); shareP:SetScript("OnClick", function(self) Sync.db.settings.shareProfessions = self:GetChecked() and true or false end)
+    local shareP = MakeCheck(footer, L.shareP); shareP:SetPoint("RIGHT", footer, "RIGHT", -150, 0); shareP:SetChecked(self.db.settings.shareProfessions); shareP:SetScript("OnClick", function(self)
+        Sync.db.settings.shareProfessions = self:GetChecked() and true or false
+        if Sync.db.settings.shareProfessions then Sync:Announce("H") end
+    end)
 
     GVE:SetRosterListener(function() Sync:RefreshUI() end)
     self:SetMainTab("members")
@@ -1127,7 +1296,11 @@ Sync.receiving = {}
 Sync.cooldowns = {}
 Sync.incomingCooldown = {}
 Sync.viewMessages = {}
+Sync.autoQueue = {}
+Sync.autoQueued = {}
+Sync.autoLastRequest = {}
 Sync.elapsed = 0
+Sync.autoElapsed = 0
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
@@ -1151,6 +1324,8 @@ local function InstallSpellbookHook()
         local _, value = GetSpellLink(slot, bookType)
         local tradeLink, name, skill, maxSkill = ParseTradeLink(value)
         if not tradeLink then return end
+        local previous = Sync.own.professions and Sync.own.professions[name]
+        if previous and previous.tradeLink == tradeLink then return end
         local capturedAt = time()
         Sync.own.professions = type(Sync.own.professions) == "table" and Sync.own.professions or {}
         Sync.own.professions[name] = {name=name, skill=skill, maxSkill=maxSkill, capturedAt=capturedAt, tradeLink=tradeLink}
@@ -1162,6 +1337,7 @@ local function InstallSpellbookHook()
         Sync.own.professionsCapturedAt = oldestAt or capturedAt
         Sync.own.receivedAt = capturedAt
         Sync:RefreshUI()
+        Sync:Announce("U")
     end)
     spellbookHookInstalled = true
 end
@@ -1173,6 +1349,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         Sync:BuildUI()
         InstallSpellbookHook()
         Sync.capturePending = GetTime() + 2
+        Sync.discoveryPending = GetTime() + 4
     elseif event == "CHAT_MSG_ADDON" then
         Sync:OnAddonMessage(...)
     elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_UPDATE" or event == "SPELLS_CHANGED" then
@@ -1180,10 +1357,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "PLAYER_GUILD_UPDATE" then
         Sync:InitDB()
         Sync.capturePending = GetTime() + 0.25
+        Sync.discoveryPending = GetTime() + 2
         Sync:RefreshUI()
     elseif event == "GUILD_ROSTER_UPDATE" and Sync.waitingForGuild then
         Sync:InitDB()
         Sync.capturePending = GetTime() + 0.25
+        Sync.discoveryPending = GetTime() + 2
         Sync:RefreshUI()
     end
 end)
@@ -1195,10 +1374,23 @@ eventFrame:SetScript("OnUpdate", function(self, elapsed)
         Sync.capturePending = nil
         Sync:CaptureProfession(false)
     end
+    if Sync.discoveryPending and GetTime() >= Sync.discoveryPending then
+        Sync.discoveryPending = nil
+        Sync:Announce("H")
+    end
+    Sync.autoElapsed = Sync.autoElapsed + elapsed
+    if Sync.autoElapsed >= AUTO_REQUEST_INTERVAL and #Sync.autoQueue > 0 then
+        Sync.autoElapsed = 0
+        local request = table.remove(Sync.autoQueue, 1)
+        if request then
+            Sync.autoQueued[request.key] = nil
+            Sync:Request(request.name, true)
+        end
+    end
     if Sync.elapsed < SEND_INTERVAL then return end
     Sync.elapsed = 0
     local queued = table.remove(Sync.sendQueue, 1)
-    if queued then SendAddonMessage(PREFIX, queued.message, "WHISPER", queued.target) end
+    if queued then SendAddonMessage(PREFIX, queued.message, queued.channel or "WHISPER", queued.target) end
     local now = GetTime()
     for key, request in pairs(Sync.pending) do
         if now > (request.deadline or 0) or now - (request.lastActivity or request.started) > REQUEST_TIMEOUT then

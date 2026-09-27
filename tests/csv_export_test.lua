@@ -140,6 +140,7 @@ local function newWidget()
             if self.scripts.OnHide then self.scripts.OnHide(self) end
         end,
         IsShown = function(self) return self.shown end,
+        GetFrameLevel = function() return 0 end,
         Enable = function(self) self.enabled = true end,
         Disable = function(self) self.enabled = false end,
     }
@@ -175,17 +176,14 @@ do
     UIDropDownMenu_SetSelectedValue = function() end
     UIDropDownMenu_SetText = function() end
     FauxScrollFrame_SetOffset = function(frame, value) frame.offset = value end
+    GVE.f = newWidget()
     GVE.lastOnlineWin = nil
     GVE:BuildLastOnlineWindow()
     local w = GVE.lastOnlineWin
-    equal(w.width, 720, "last-online window width")
-    equal(w.height, 600, "last-online window height")
-    equal(#w.rows, 20, "last-online visible row count")
-    equal(w.search.width, 390, "last-online search width")
+    equal(#w.rows, 11, "last-online compact visible row count")
+    equal(w.search.width, 360, "last-online search width")
     equal(w.rows[1].rank.wordWrap, false, "long ranks cannot wrap into next row")
     if not w.rows[1].divider then error("last-online row divider missing") end
-    equal(UISpecialFrames[#UISpecialFrames], "GVELastOnlineWindow",
-        "last-online Escape frame registration")
 
     w.search:SetText("Arthas")
     w.search.scripts.OnTextChanged(w.search)
