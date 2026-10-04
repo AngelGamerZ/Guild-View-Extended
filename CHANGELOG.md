@@ -2,105 +2,56 @@
 
 ## 1.4 - 2026-10-04
 
-- Group all WotLK profession ranks across client languages by their base
-  profession spell, show category names in the receiving client's language,
-  and let English/German searches find all members in the same category.
-- Add background guild position exchange, green world-map/minimap dots with
-  player-name tooltips, zoom/rotation support, and automatic stale-pin removal.
-- Add neon-green, black-outlined guild names and generic G badges on stock
-  plates and supported addon plates where a usable client anchor exists.
-  Preserve actual unit reaction/health data and restore recycled visuals.
-- Follow friendly/enemy visual preferences separately: plates on keeps
-  existing bars; plates off retains guild names + G with invisible engine
-  anchors. Preserve preferences across reload and restore on disable.
-- Integrate stock plate keys using temporary, combat-safe binding overrides;
-  observe settings writes without replacing addon functions or profiles.
-- Add ElvUI-WotLK, TidyPlates and RefinedBlizzPlates adapters plus a fallback
-  for skins retaining recognisable stock frames. Remove the proximity HUD.
-- Document the unresolved non-attackable cross-faction overhead-name case;
-  map dots and hover names remain independent of nameplate anchors and use
-  guild-channel position packets. No client patch is required or bundled.
-- Keep live map positions in memory only and suppress instance coordinates.
-- Preserve profession snapshots across character changes by storing received
-  player data and each alt's own captured professions in separate realm/guild
-  scopes inside the account-wide `GVESyncData` SavedVariable.
-- Migrate existing 1.3 profession caches without deleting them, and restore a
-  guild's previous cache when returning from another guild or a guildless alt.
+- Find guild members on the minimap and world map with green dots. Hover over a dot to see the character's name. Positions update in the background, and outdated dots disappear automatically.
+- Spot nearby guild members more easily with bright green names, a black outline, and a **G** badge where supported.
+- Keep your usual health bars when nameplates are enabled. When nameplates are disabled, guild members can still show a name and **G** badge where supported.
+- Added name-marker support for the default WoW nameplates, ElvUI-WotLK, TidyPlates, and RefinedBlizzPlates.
+- All ranks of the same profession now appear in one category, including German and English entries. For example, Apprentice Cooking and Grand Master Cooking belong together.
+- Keep saved profession information when switching characters, including your own offline alts in the same guild. Previously saved information is kept when updating.
+- Profession information stays separate for each realm and guild, and is available again when you return to that guild.
+
+### Important to know
+
+- Map dots require both players to use compatible versions of Guild-View-Extended. Positions are not shared inside instances.
+- Cross-faction map dots depend on your server allowing guild communication between factions.
+- Some non-attackable cross-faction guild members still cannot be marked above their characters. Map dots and their name tooltips do not depend on these overhead markers.
 
 ## 1.3 - 2026-09-27
 
-- Replaced class atlases with explicit, original 3.3.5a class-motif textures,
-  including `INV_Misc_MonsterClaw_04` for Druid and
-  `Spell_Deathknight_ClassIcon` for Death Knight, so custom atlas layouts can
-  no longer select or crop the wrong class icon.
-- Added timestamp-ordered profession snapshot relays between compatible guild
-  members, allowing newer offline-player data to propagate through multiple
-  online caches without loops or recipe-level merging.
-- Added visible `via Name` provenance for relayed data and retained direct
-  owner snapshots as the authoritative replacement path.
-- Added account-wide sharing of the last self-captured snapshots for offline
-  guild alts while respecting the profession-sharing checkbox.
+- Receive newer saved profession information for offline guild members through other online guildmates, even if the original player is not online.
+- Share the last recorded professions of your offline guild alts through your online character. Your profession-sharing setting still applies.
+- Profession entries now show **via Name** when another guild member shared the information with you.
+- Corrected class icons, including Druid and Death Knight, so they display the proper original WoW icons.
 
 ## 1.2 - 2026-09-27
 
-- Changed the Social-window redirect so selecting the stock Guild tab opens
-  Guild-View-Extended while resetting Blizzard's hidden selection to Friends.
-- Restored immediate access to the Friends list through `O`, including a
-  direct switch from an open Guild-View-Extended window.
-- Added regression coverage for Guild redirection, Friends-tab restoration,
-  and unchanged Who/Raid behavior.
+- Selecting **Guild** in the Social window opened with **O** now opens Guild-View-Extended without blocking your Friends list.
+- Press **O** while Guild-View-Extended is open to switch directly to your Friends list.
+- After closing Guild-View-Extended, pressing **O** opens your Friends list normally again.
+- The **Who** and **Raid** tabs continue to work as usual.
 
 ## 1.1 - 2026-09-27
 
-- Added peer-based version discovery with one-time chat notifications, a
-  GuildView quest marker, and a copyable official GitHub Releases URL.
-- Fixed reopening Guild-View-Extended through `O` after the stock Guild tab
-  had previously redirected to and closed the addon window.
-- Added **Sync guild now**, which refreshes the local profession snapshot,
-  directly requests every online guild member, and sends a guild discovery
-  broadcast without requiring chat interaction.
-- Forced manual synchronization to bypass cached timestamps and stale pending
-  requests while retaining protocol validation and throttled transfers.
-- Added clear diagnostics for automatic profession capture, outgoing snapshots,
-  incoming timestamps, and outdated responses.
-- Added automatic discovery between compatible online guild members.
-- Added rate-limited background requests instead of requiring every profession
-  snapshot to be requested manually.
-- Announced changed profession links to online addon users and synchronized
-  only when the advertised snapshot is newer than the local cache.
-- Preserved the manual request button as an explicit refresh action.
-- Replaced the profession master-detail view with a full-width expandable
-  profession table, including 3.3.5a spell icons, player/rank rows, direct
-  profession links, skill, snapshot age, status, and compact filters.
-- Rebuilt the member page in the same flat visual language with compact
-  32-pixel rows: class icon, name, level and class, zone, rank, and note.
-- Expanded roster search to names, classes, zones, ranks, and public notes.
-- Made both the MOTD and Guild Information visible at a glance across the full
-  member-page width.
-- Moved Guild Log and Last Online into focused in-window views and retained
-  their existing data, filters, permissions, and CSV export actions.
-- Restyled the existing stock Guild Control popup without replacing its
-  original 3.3.5a permission and save logic.
-- Kept the roster scrollbar inside the window, widened the member page, and
-  switched member/filter icons to the original 3.3.5a WorldStateFrame class
-  atlas with the Build 12340 coordinates.
-- Replaced the oversized member-detail drawer with a compact centered card,
-  wider note fields, and flat Guild-View-Extended action buttons.
+- Get a chat notification and a small quest marker in Guild-View-Extended when another addon user reports a newer version. The marker provides a copyable link to the official download page.
+- Professions now synchronize automatically with compatible online guild members in the background, without anyone having to post a link in chat or manually reply.
+- Added **Sync guild now** to share your current professions and request updated information from online guildmates. Individual requests are still available.
+- Browse professions in an expandable table with profession icons, player names, clickable profession links, skill levels, last-update times, and online status.
+- Redesigned the member list with compact rows showing class icon, name, level and class, zone, rank, and note.
+- Search members by name, class, zone, rank, or public note.
+- See the Guild Message of the Day and Guild Information side by side without opening another view.
+- Open **Guild Log** and **Last Online** from the main window, with their existing filters and export options.
+- Updated the look of Guild Control and made player details more compact, with wider note fields and clearer action buttons.
+- Widened the member view and kept its scrollbar inside the window.
+- Improved reopening Guild-View-Extended through the Social window's Guild tab.
 
 ## 1.0
 
-- Modernized the guild roster while retaining member management, guild
-  controls, guild logs, notes, filters, sorting, and automatic roster updates.
-- Added a searchable and readable Last Online window.
-- Added direct group invitations and a confirmed Leave Guild action.
-- Added a copyable two-column CSV export containing character names and guild
-  ranks.
-- Added a profession-only synchronization tab for World of Warcraft 3.3.5a.
-- Captured authentic profession links automatically from the spellbook and
-  displayed them as clickable links that open WoW's linked profession window.
-- Grouped players by profession and allowed searches by player or profession.
-- Added request-based, validated, throttled synchronization between online
-  guild members using the legacy addon-message APIs.
+- First standalone release of Guild-View-Extended for **World of Warcraft 3.3.5a**.
+- Updated the guild roster while keeping member management, guild controls, logs, notes, filters, and sorting. Member information refreshes automatically when guild changes arrive.
+- Added a searchable **Last Online** view.
+- Invite a member directly to your group, or leave your own guild after confirming the action.
+- Copy a CSV export containing character names and guild ranks.
+- Browse guild members by profession, search by player or profession, and click a profession link to open its recipe window.
+- Record your own profession links automatically and request profession information from online guildmates using the addon.
+- Fixed saving Guild Control settings reopening the old guild window.
 - Added German and English interface text.
-- Added regression coverage for roster workflows, CSV export, profession-link
-  variants, SavedVariables migration, synchronization, and search grouping.
