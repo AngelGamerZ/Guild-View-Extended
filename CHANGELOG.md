@@ -2,19 +2,16 @@
 
 ## 1.4 - 2026-10-04
 
-- Find guild members on the minimap and world map with green dots. Hover over a dot to see the character's name. Positions update in the background, and outdated dots disappear automatically.
-- Spot nearby guild members more easily with bright green names, a black outline, and a **G** badge where supported.
-- Keep your usual health bars when nameplates are enabled. When nameplates are disabled, guild members can still show a name and **G** badge where supported.
-- Added name-marker support for the default WoW nameplates, ElvUI-WotLK, TidyPlates, and RefinedBlizzPlates.
+- Removed guild name markers and guild-member dots on the minimap and world map. GVE no longer shares character positions or controls nameplate display.
+- Your previous nameplate visibility settings are restored once after updating from the earlier 1.4 package. Your other addons' settings are not changed.
 - All ranks of the same profession now appear in one category, including German and English entries. For example, Apprentice Cooking and Grand Master Cooking belong together.
 - Keep saved profession information when switching characters, including your own offline alts in the same guild. Previously saved information is kept when updating.
 - Profession information stays separate for each realm and guild, and is available again when you return to that guild.
+- Member management, profession sharing, and all other guild features remain available.
 
-### Important to know
+### Updating from an earlier 1.4 download
 
-- Map dots require both players to use compatible versions of Guild-View-Extended. Positions are not shared inside instances.
-- Cross-faction map dots depend on your server allowing guild communication between factions.
-- Some non-attackable cross-faction guild members still cannot be marked above their characters. Map dots and their name tooltips do not depend on these overhead markers.
+This package replaces the earlier 1.4 download. Download it again to receive the simplified version, even if your installed version already says 1.4.
 
 ## 1.3 - 2026-09-27
 

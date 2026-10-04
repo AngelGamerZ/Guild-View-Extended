@@ -446,4 +446,34 @@ do
     GetLocale,GetSpellInfo=originalLocale,originalSpellInfo
 end
 
+do
+    local writes, values = 0, {nameplateShowFriends="1", nameplateShowEnemies="1"}
+    GetCVar=function(key) return values[key] end
+    SetCVar=function(key,value) writes=writes+1; values[key]=value end
+    local settings=GVE.Sync.db.settings
+    settings.guildFriendlyPrevious="0"; settings.guildEnemyPrevious="1"
+    settings.guildMapEnabled=true; settings.guildNearbyEnabled=true
+    settings.guildMarkerStyle="auto"; settings.guildMarkerRevision=4
+    settings.shareProfessions=false
+    GVE.Sync:InitDB()
+    equal(values.nameplateShowFriends,"0","removed markers restore original friendly setting")
+    equal(values.nameplateShowEnemies,"1","removed markers retain original enemy setting")
+    equal(settings.shareProfessions,false,"removal preserves profession-sharing preference")
+    for _, key in ipairs({"guildFriendlyPrevious","guildEnemyPrevious","guildMapEnabled",
+        "guildNearbyEnabled","guildMarkerStyle","guildMarkerRevision"}) do
+        equal(settings[key],nil,"removed marker setting cleared: "..key)
+    end
+    local firstWrites=writes
+    GVE.Sync:InitDB()
+    equal(writes,firstWrites,"cleanup does not keep controlling nameplate preferences")
+    settings.guildFriendlyPrevious="1"; values.nameplateShowFriends="0"
+    GVE.Sync:InitDB()
+    equal(values.nameplateShowFriends,"0","explicit changed preference is left alone")
+    settings.guildEnemyPrevious="invalid"
+    GVE.Sync:InitDB()
+    equal(writes,firstWrites,"invalid saved preference cannot alter client settings")
+    equal(GVE.GuildMap,nil,"no map module loaded")
+    GetCVar,SetCVar=nil,nil
+end
+
 print("Guild View Extended sync snapshot tests passed")

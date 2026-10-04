@@ -347,6 +347,21 @@ function Sync:InitDB()
     if db.settings.shareProfessions == nil then db.settings.shareProfessions = true end
     db.settings.shareReagents = nil
 
+    -- One-time cleanup after removal of guild maps/name markers. Release
+    -- forced engine plate visibility without changing other addon profiles.
+    for _, entry in ipairs({{"guildFriendlyPrevious", "nameplateShowFriends"},
+        {"guildEnemyPrevious", "nameplateShowEnemies"}}) do
+        local saved = tonumber(db.settings[entry[1]])
+        if (saved == 0 or saved == 1) and type(GetCVar) == "function"
+            and type(SetCVar) == "function" and GetCVar(entry[2]) == "1" then
+            SetCVar(entry[2], tostring(saved))
+        end
+        db.settings[entry[1]] = nil
+    end
+    for _, key in ipairs({"guildMapEnabled", "guildNearbyEnabled", "guildMarkerStyle", "guildMarkerRevision"}) do
+        db.settings[key] = nil
+    end
+
     local function MigrateSnapshot(snapshot)
         if type(snapshot) ~= "table" then return end
         snapshot.reagents = nil

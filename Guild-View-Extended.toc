@@ -8,6 +8,3 @@
 Guild-View-Extended.lua
 Guild-View-Extended-Version.lua
 Guild-View-Extended-Sync.lua
-Guild-View-Extended-MapData.lua
-Guild-View-Extended-Map.lua
-Guild-View-Extended-Markers.lua
