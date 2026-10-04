@@ -11,6 +11,7 @@ GVE.Sync = Sync
 
 local PREFIX = "GVEX4"
 local PROTOCOL = 4
+local STORAGE_SCHEMA = 2
 local CHUNK_BYTES = 175
 local MAX_CHUNKS = 256
 local MAX_BYTES = MAX_CHUNKS * CHUNK_BYTES
@@ -328,22 +329,20 @@ end
 
 function Sync:InitDB()
     if type(GVESyncData) ~= "table" then
-        GVESyncData = {schema=PROTOCOL, players={}, ownByCharacter={}, settings={}}
+        GVESyncData = {schema=PROTOCOL, storageSchema=STORAGE_SCHEMA, guilds={}, settings={}}
     end
     local db = GVESyncData
     local previousSchema = tonumber(db.schema) or 0
     if previousSchema > PROTOCOL then
         -- Daten einer neueren, unbekannten Version niemals als v4 umdeuten.
         -- Nur die harmlosen Freigabeeinstellungen koennen uebernommen werden.
-        db = {schema=PROTOCOL, players={}, ownByCharacter={}, settings=type(db.settings) == "table" and db.settings or {}}
+        db = {schema=PROTOCOL, storageSchema=STORAGE_SCHEMA, guilds={}, settings=type(db.settings) == "table" and db.settings or {}}
         GVESyncData = db
         previousSchema = PROTOCOL
     end
     -- Alte Berufslinks bleiben erhalten. Nicht mehr verwendete Bank- und
     -- Rezeptindexdaten werden bei der Migration ersatzlos entfernt.
     db.schema = PROTOCOL
-    db.players = type(db.players) == "table" and db.players or {}
-    db.ownByCharacter = type(db.ownByCharacter) == "table" and db.ownByCharacter or {}
     db.settings = type(db.settings) == "table" and db.settings or {}
     if db.settings.shareProfessions == nil then db.settings.shareProfessions = true end
     db.settings.shareReagents = nil
@@ -373,16 +372,12 @@ function Sync:InitDB()
         snapshot.relayFrom = CleanName(snapshot.relayFrom)
         snapshot.directSource = snapshot.relayFrom and false or true
     end
-    -- Spieler, Berufslinks und Freigabeeinstellung bleiben dabei erhalten.
-    MigrateSnapshot(db.own)
-    for _, snapshot in pairs(db.ownByCharacter) do MigrateSnapshot(snapshot) end
-    for _, snapshot in pairs(db.players) do MigrateSnapshot(snapshot) end
-
     local guildName = GetGuildInfo("player")
     if (not guildName or guildName == "") and type(IsInGuild) == "function" and IsInGuild() then
         -- Direkt bei PLAYER_LOGIN kann der Gildenname noch ungeladen sein.
         -- Niemals deshalb einen gueltigen gespeicherten Guild-Scope leeren.
         self.db = db
+        self.guildData = self.guildData or {players={}, ownByCharacter={}}
         self.own = self.own or {}
         self.waitingForGuild = true
         return false
@@ -390,10 +385,53 @@ function Sync:InitDB()
     guildName = guildName or ""
     self.waitingForGuild = nil
     local guildKey = (GetRealmName() or "").."\031"..guildName
-    if db.guildKey and db.guildKey ~= guildKey then
-        wipe(db.players)
-        wipe(db.ownByCharacter)
-        db.own = nil
+
+    -- Bis Version 1.3 lagen nur die Daten der zuletzt angemeldeten Gilde an
+    -- der Wurzel der SavedVariables. Verschiebe sie einmalig in den damals
+    -- gespeicherten Gildenbereich. So bleiben sie auch erhalten, wenn der
+    -- naechste Charakter in einer anderen Gilde oder gildenlos ist.
+    db.guilds = type(db.guilds) == "table" and db.guilds or {}
+    if type(db.players) == "table" or type(db.ownByCharacter) == "table" or type(db.own) == "table" then
+        local legacyGuildKey = type(db.guildKey) == "string" and db.guildKey or guildKey
+        local legacyGuild = type(db.guilds[legacyGuildKey]) == "table" and db.guilds[legacyGuildKey] or {}
+        legacyGuild.players = type(legacyGuild.players) == "table" and legacyGuild.players or {}
+        legacyGuild.ownByCharacter = type(legacyGuild.ownByCharacter) == "table" and legacyGuild.ownByCharacter or {}
+        for key, snapshot in pairs(type(db.players) == "table" and db.players or {}) do
+            if legacyGuild.players[key] == nil then legacyGuild.players[key] = snapshot end
+        end
+        for key, snapshot in pairs(type(db.ownByCharacter) == "table" and db.ownByCharacter or {}) do
+            if legacyGuild.ownByCharacter[key] == nil then legacyGuild.ownByCharacter[key] = snapshot end
+        end
+        if type(db.own) == "table" and legacyGuildKey == guildKey then
+            local legacyCharacterKey = guildKey.."\031"..(UnitName("player") or "Unknown")
+            if legacyGuild.ownByCharacter[legacyCharacterKey] == nil then
+                legacyGuild.ownByCharacter[legacyCharacterKey] = db.own
+            end
+        end
+        db.guilds[legacyGuildKey] = legacyGuild
+        db.players, db.ownByCharacter, db.own, db.guildKey = nil, nil, nil, nil
+    end
+    db.storageSchema = STORAGE_SCHEMA
+
+    local guildData = type(db.guilds[guildKey]) == "table" and db.guilds[guildKey] or {}
+    guildData.players = type(guildData.players) == "table" and guildData.players or {}
+    guildData.ownByCharacter = type(guildData.ownByCharacter) == "table" and guildData.ownByCharacter or {}
+    db.guilds[guildKey] = guildData
+
+    -- Alle gespeicherten Gildenbereiche migrieren, nicht nur die gerade
+    -- aktive Gilde. Dadurch bleibt auch ein spaeter wieder besuchter Cache
+    -- gueltig und wird nicht beim Charakterwechsel verworfen.
+    for _, storedGuild in pairs(db.guilds) do
+        if type(storedGuild) == "table" then
+            storedGuild.players = type(storedGuild.players) == "table" and storedGuild.players or {}
+            storedGuild.ownByCharacter = type(storedGuild.ownByCharacter) == "table" and storedGuild.ownByCharacter or {}
+            for _, snapshot in pairs(storedGuild.ownByCharacter) do MigrateSnapshot(snapshot) end
+            for _, snapshot in pairs(storedGuild.players) do MigrateSnapshot(snapshot) end
+        end
+    end
+
+    local characterKey = guildKey.."\031"..(UnitName("player") or "Unknown")
+    if self.activeGuildKey ~= guildKey or self.activeCharacterKey ~= characterKey then
         if self.sendQueue then wipe(self.sendQueue) end
         if self.pending then wipe(self.pending) end
         if self.receiving then wipe(self.receiving) end
@@ -412,22 +450,20 @@ function Sync:InitDB()
         if self.relayOwnerPending then wipe(self.relayOwnerPending) end
         if self.relayIncomingCooldown then wipe(self.relayIncomingCooldown) end
     end
-    db.guildKey = guildKey
-    local characterKey = guildKey.."\031"..(UnitName("player") or "Unknown")
-    if type(db.ownByCharacter[characterKey]) ~= "table" then
-        -- Einmalige Migration frueher lokaler Testdaten auf den gerade
-        -- angemeldeten Charakter; danach keine accountweite Vermischung.
-        db.ownByCharacter[characterKey] = type(db.own) == "table" and db.own or {}
+    self.activeGuildKey = guildKey
+    self.activeCharacterKey = characterKey
+    if type(guildData.ownByCharacter[characterKey]) ~= "table" then
+        guildData.ownByCharacter[characterKey] = {}
     end
-    db.own = nil
-    self.own = db.ownByCharacter[characterKey]
+    self.own = guildData.ownByCharacter[characterKey]
     local cutoff = time() - CACHE_TTL
-    for key, entry in pairs(db.players) do
+    for key, entry in pairs(guildData.players) do
         if type(entry) ~= "table" or (tonumber(entry.receivedAt) or 0) < cutoff then
-            db.players[key] = nil
+            guildData.players[key] = nil
         end
     end
     self.db = db
+    self.guildData = guildData
     return true
 end
 
@@ -449,8 +485,8 @@ end
 
 function Sync:GetOwnCharacterSnapshot(name)
     local wanted = KeyName(name)
-    if not wanted or not self.db or type(self.db.ownByCharacter) ~= "table" then return nil end
-    for characterKey, snapshot in pairs(self.db.ownByCharacter) do
+    if not wanted or not self.guildData or type(self.guildData.ownByCharacter) ~= "table" then return nil end
+    for characterKey, snapshot in pairs(self.guildData.ownByCharacter) do
         local characterName = type(characterKey) == "string" and characterKey:match("([^\031]+)$")
         if characterName and KeyName(characterName) == wanted and type(snapshot) == "table" then
             return snapshot, characterName
@@ -460,7 +496,7 @@ end
 
 function Sync:GetPlayerData(name)
     if IsOwn(name) then return self.own end
-    local cached = self.db.players[KeyName(name) or ""]
+    local cached = self.guildData.players[KeyName(name) or ""]
     local ownAlt = self:GetOwnCharacterSnapshot(name)
     if ownAlt and (not cached
     or (tonumber(ownAlt.professionsCapturedAt) or 0) >= (tonumber(cached.professionsCapturedAt) or 0)) then
@@ -472,7 +508,7 @@ end
 function Sync:GetShareableSnapshot(name)
     local ownerKey = KeyName(name)
     if not ownerKey then return nil end
-    local cached = self.db.players[ownerKey]
+    local cached = self.guildData.players[ownerKey]
     local ownAlt = self:GetOwnCharacterSnapshot(name)
     if ownAlt and (not cached
     or (tonumber(ownAlt.professionsCapturedAt) or 0) >= (tonumber(cached.professionsCapturedAt) or 0)) then
@@ -683,12 +719,12 @@ end
 
 function Sync:PruneCachedPlayers()
     local cached = {}
-    for key, value in pairs(self.db.players) do
+    for key, value in pairs(self.guildData.players) do
         cached[#cached + 1] = {key=key, receivedAt=tonumber(value.receivedAt) or 0}
     end
     table.sort(cached, function(a, b) return a.receivedAt < b.receivedAt end)
     while #cached > MAX_CACHED_PLAYERS do
-        self.db.players[cached[1].key] = nil
+        self.guildData.players[cached[1].key] = nil
         table.remove(cached, 1)
     end
 end
@@ -723,7 +759,7 @@ function Sync:SendRelayCatalog(target, requestID)
             end
         end
     end
-    for _, entry in pairs(self.db.players or {}) do
+    for _, entry in pairs(self.guildData.players or {}) do
         -- Auch weitergeleitete Snapshots duerfen erneut angeboten werden.
         -- Empfaenger akzeptieren sie nur bei strikt neuerem Besitzer-Zeitstempel;
         -- dadurch laufen identische Daten nicht im Kreis.
@@ -732,7 +768,7 @@ function Sync:SendRelayCatalog(target, requestID)
     -- Accountweite SavedVariables erlauben es, auch eigene derzeit offline
     -- Twinks mit ihrem letzten selbst erfassten Stand anzubieten.
     if self.db.settings.shareProfessions then
-        for characterKey, entry in pairs(self.db.ownByCharacter or {}) do
+        for characterKey, entry in pairs(self.guildData.ownByCharacter or {}) do
             local owner = type(characterKey) == "string" and characterKey:match("([^\031]+)$")
             if not IsOwn(owner) then AddCatalogEntry(owner, entry) end
         end
@@ -1055,7 +1091,7 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
         or transfer.capturedAt < (tonumber(pending.advertisedAt) or 0) then return end
         local existing = self:GetPlayerData(pending.owner)
         if existing and (tonumber(existing.professionsCapturedAt) or 0) >= (tonumber(decoded.professionsCapturedAt) or 0) then return end
-        self.db.players[pending.ownerKey] = {
+        self.guildData.players[pending.ownerKey] = {
             displayName=pending.owner,
             professions=decoded.professions,
             professionsCapturedAt=decoded.professionsCapturedAt,
@@ -1129,20 +1165,20 @@ function Sync:OnAddonMessage(prefix, message, channel, sender)
             return
         end
         local playerKey = KeyName(cleanSender)
-        local existing = self.db.players[playerKey]
+        local existing = self.guildData.players[playerKey]
         if existing and (tonumber(existing.professionsCapturedAt) or 0) > (tonumber(decoded.professionsCapturedAt) or 0) then
             self.viewMessages[pendingKey] = nil
             self:RefreshUI()
             return
         end
-        local entry = self.db.players[playerKey] or {displayName=cleanSender}
+        local entry = self.guildData.players[playerKey] or {displayName=cleanSender}
         entry.professions = decoded.professions
         entry.professionsCapturedAt = decoded.professionsCapturedAt
         entry.displayName = cleanSender
         entry.receivedAt = time()
         entry.relayFrom = nil
         entry.directSource = true
-        self.db.players[playerKey] = entry
+        self.guildData.players[playerKey] = entry
         self.autoLastRequest[pendingKey] = nil
         self:PruneCachedPlayers()
         if pending.requireFresh
@@ -1164,9 +1200,42 @@ local function ContainsFolded(value, needle)
     return needle == "" or Fold(value):find(needle, 1, true) ~= nil
 end
 
+-- Rank chains from AzerothCore's 3.3.5 spell_ranks table:
+-- https://github.com/azerothcore/azerothcore-wotlk/blob/master/data/sql/base/db_world/spell_ranks.sql
+-- A trade-link spell identifies the profession independently of the sender's
+-- client language. Never rewrite its localized label or recipe bitmap.
+local PROFESSION_FAMILIES = {
+    {base=2259, en="Alchemy", de="Alchemie", ranks={2259,3101,3464,11611,28596,51304}},
+    {base=2018, en="Blacksmithing", de="Schmiedekunst", ranks={2018,3100,3538,9785,29844,51300}},
+    {base=7411, en="Enchanting", de="Verzauberkunst", ranks={7411,7412,7413,13920,28029,51313}},
+    {base=4036, en="Engineering", de="Ingenieurskunst", ranks={4036,4037,4038,12656,30350,51306}},
+    {base=45357, en="Inscription", de="Inschriftenkunde", ranks={45357,45358,45359,45360,45361,45363}},
+    {base=25229, en="Jewelcrafting", de="Juwelenschleifen", ranks={25229,25230,28894,28895,28897,51311}},
+    {base=2108, en="Leatherworking", de="Lederverarbeitung", ranks={2108,3104,3811,10662,32549,51302}},
+    {base=3908, en="Tailoring", de="Schneiderei", ranks={3908,3909,3910,12180,26790,51309}},
+    {base=2550, en="Cooking", de="Kochkunst", ranks={2550,3102,3413,18260,33359,51296}},
+    {base=3273, en="First Aid", de="Erste Hilfe", ranks={3273,3274,7924,10846,27028,45542}},
+    {base=7620, en="Fishing", de="Angeln", ranks={7620,7731,7732,18248,33095,51294}},
+    {base=2575, en="Mining", de="Bergbau", ranks={2575,2576,3564,10248,29354,50310}},
+    {base=2366, en="Herbalism", de="Kräuterkunde", ranks={2366,2368,3570,11993,28695,50300}},
+    {base=8613, en="Skinning", de="Kürschnerei", ranks={8613,8617,8618,10768,32678,50305}},
+}
+local PROFESSION_BY_SPELL, PROFESSION_BY_NAME = {}, {}
+for _, family in ipairs(PROFESSION_FAMILIES) do
+    for _, spellID in ipairs(family.ranks) do PROFESSION_BY_SPELL[spellID] = family end
+    PROFESSION_BY_NAME[Fold(family.en)] = family
+    PROFESSION_BY_NAME[Fold(family.de)] = family
+end
+
 local function ProfessionCategoryKey(name, profession)
     local _, _, _, _, spellID = ParseTradeLink(profession and profession.tradeLink)
-    return spellID and ("spell:"..spellID) or ("name:"..Fold(name)), spellID
+    local family = PROFESSION_BY_SPELL[spellID] or PROFESSION_BY_NAME[Fold(name)]
+    if not family then return "name:"..Fold(name), spellID, name end
+    local localName = type(GetSpellInfo) == "function" and GetSpellInfo(family.base)
+    if type(localName) ~= "string" or localName == "" then
+        localName = GetLocale() == "deDE" and family.de or family.en
+    end
+    return "profession:"..family.base, family.base, localName, family
 end
 
 local function ProfessionIsStale(profession)
@@ -1220,10 +1289,12 @@ function Sync:BuildPlayerList()
                 local tradeLink = type(profession) == "table" and SafeTradeLink(profession.tradeLink)
                 if tradeLink then
                     hasData = true
+                    local categoryKey, spellID, categoryName, family = ProfessionCategoryKey(professionName, profession)
                     local professionMatch = ContainsFolded(professionName, needle)
+                        or ContainsFolded(categoryName, needle)
+                        or family and (ContainsFolded(family.en, needle) or ContainsFolded(family.de, needle))
                     if memberMatch or professionMatch then
-                        local categoryKey, spellID = ProfessionCategoryKey(professionName, profession)
-                        Add(categoryKey, professionName, member, profession, spellID, 1, true, data.relayFrom)
+                        Add(categoryKey, categoryName, member, profession, spellID, 1, true, data.relayFrom)
                     end
                 end
             end

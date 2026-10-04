@@ -109,13 +109,13 @@ do
     GVE.Sync:InitDB()
     equal(GVESyncData.schema, 4, "schema migrated to profession-only v4")
     equal(GVESyncData.settings.shareReagents, nil, "obsolete sharing setting removed")
-    equal(GVESyncData.players.jaina.reagents, nil, "obsolete snapshot data removed")
-    equal(GVESyncData.players.jaina.professions.Schneiderei.tradeLink, oldLink,
+    equal(GVE.Sync.guildData.players.jaina.reagents, nil, "obsolete snapshot data removed")
+    equal(GVE.Sync.guildData.players.jaina.professions.Schneiderei.tradeLink, oldLink,
         "existing valid profession link retained")
-    equal(GVESyncData.players.jaina.professions.Schneiderei.recipes, nil,
+    equal(GVE.Sync.guildData.players.jaina.professions.Schneiderei.recipes, nil,
         "obsolete embedded index removed")
 
-    GVESyncData.players.jaina.professions.Alchemie = {
+    GVE.Sync.guildData.players.jaina.professions.Alchemie = {
         name="Alchemie", skill=450, maxSkill=450, capturedAt=1799999000,
         tradeLink="|cffffd000|Htrade:51304:450:450:ABCDEF:A+:B/_|h[Alchemie]|h|r",
     }
@@ -163,7 +163,7 @@ do
     wipe(GVE.Sync.autoQueue)
     wipe(GVE.Sync.autoQueued)
     wipe(GVE.Sync.autoLastRequest)
-    GVE.Sync.db.players.jaina.professionsCapturedAt = 1800000000
+    GVE.Sync.guildData.players.jaina.professionsCapturedAt = 1800000000
     GVE.Sync.forceDiscoveryUntil = GetTime() + 15
     GVE.Sync:OnAddonMessage("GVEX4", "A|1800000000", "WHISPER", "Jaina")
     equal(#GVE.Sync.autoQueue, 1, "manual discovery forces refresh for equal cached timestamp")
@@ -237,7 +237,7 @@ do
             {name="Twinka", online=false},
         }
     end
-    GVE.Sync.db.players = {
+    GVE.Sync.guildData.players = {
         astera={
             displayName="Astera", receivedAt=1799999900,
             professionsCapturedAt=1799999000, directSource=true,
@@ -247,7 +247,7 @@ do
             }},
         },
     }
-    GVE.Sync.db.ownByCharacter["Realm\031Guild\031Twinka"] = {
+    GVE.Sync.guildData.ownByCharacter["Realm\031Guild\031Twinka"] = {
         professionsCapturedAt=1799999500, receivedAt=1799999500,
         professions={Tailoring={
             name="Tailoring", skill=225, maxSkill=300,
@@ -297,9 +297,9 @@ do
             "RD|"..requestID.."|"..index.."|"..part, "WHISPER", "Konrat")
     end
     GVE.Sync:OnAddonMessage("GVEX4", "RE|"..requestID, "WHISPER", "Konrat")
-    equal(GVE.Sync.db.players.astera.professions.Tailoring.skill, 300,
+    equal(GVE.Sync.guildData.players.astera.professions.Tailoring.skill, 300,
         "newer relayed profession replaces older cache")
-    equal(GVE.Sync.db.players.astera.relayFrom, "Konrat",
+    equal(GVE.Sync.guildData.players.astera.relayFrom, "Konrat",
         "last relay source is retained for UI provenance")
 
     wipe(GVE.Sync.sendQueue)
@@ -311,6 +311,139 @@ do
     equal(foundAstera, true, "relayed snapshot can propagate while prior relay is offline")
     equal(GVE.Sync:QueueRelayCandidate("Muri", "Astera", 1800000000), false,
         "equal timestamp stops relay loops")
+end
+
+do
+    -- Regression: Accountweite SavedVariables duerfen beim Charakter- oder
+    -- Gildenwechsel nicht mehr geleert werden. Jede Gilde bleibt getrennt
+    -- gespeichert und wird beim Zurueckwechsel wieder aktiviert.
+    local activeGuild, activeCharacter = "Guild Alpha", "Mainchar"
+    GetGuildInfo = function() return activeGuild end
+    UnitName = function() return activeCharacter end
+    local link = "|cffffd000|Htrade:3908:300:300:ABCDEF:CACHE|h[Tailoring]|h|r"
+    GVESyncData = {
+        schema=4,
+        guildKey="Test Realm\031Guild Alpha",
+        players={astera={
+            displayName="Astera", receivedAt=1800000000,
+            professionsCapturedAt=1800000000,
+            professions={Tailoring={name="Tailoring", skill=300, maxSkill=300,
+                capturedAt=1800000000, tradeLink=link}},
+        }},
+        ownByCharacter={["Test Realm\031Guild Alpha\031Mainchar"]={
+            receivedAt=1800000000, professionsCapturedAt=1800000000,
+            professions={Tailoring={name="Tailoring", skill=300, maxSkill=300,
+                capturedAt=1800000000, tradeLink=link}},
+        }},
+        settings={shareProfessions=true},
+    }
+
+    GVE.Sync:InitDB()
+    equal(GVE.Sync.guildData.players.astera.displayName, "Astera",
+        "legacy cache is migrated into its guild scope")
+    equal(GVESyncData.players, nil, "legacy root player cache removed after migration")
+
+    activeCharacter = "Altchar"
+    GVE.Sync:InitDB()
+    equal(GVE.Sync.guildData.players.astera.displayName, "Astera",
+        "same-guild character switch preserves received professions")
+    equal(GVE.Sync:GetOwnCharacterSnapshot("Mainchar").professions.Tailoring.skill, 300,
+        "offline own character profession remains available")
+    GVE.Sync.own.professionsCapturedAt = 1800000000
+
+    activeGuild = "Guild Beta"
+    GVE.Sync:InitDB()
+    equal(next(GVE.Sync.guildData.players), nil,
+        "different guild starts with an isolated player cache")
+    GVE.Sync.guildData.players.beta = {displayName="Beta", receivedAt=1800000000}
+
+    activeGuild, activeCharacter = "Guild Alpha", "Mainchar"
+    GVE.Sync:InitDB()
+    equal(GVE.Sync.guildData.players.astera.displayName, "Astera",
+        "returning to a guild restores its profession cache")
+    equal(GVESyncData.guilds["Test Realm\031Guild Beta"].players.beta.displayName, "Beta",
+        "other guild cache remains stored across character switches")
+end
+
+do
+    GVE.GetMembers = function()
+        return {{name="Apprentice", online=true}, {name="Master", online=false}}
+    end
+    local lowLink = "|cffffd000|Htrade:2550:45:75:ABCD:LOW|h[Cooking]|h|r"
+    local highLink = "|cffffd000|Htrade:51296:450:450:DCBA:HIGH|h[Cooking]|h|r"
+    GVE.Sync.guildData.players = {
+        apprentice={professions={Cooking={skill=45, maxSkill=75, tradeLink=lowLink}}},
+        master={professions={Cooking={skill=450, maxSkill=450, tradeLink=highLink}}},
+    }
+    GVE.Sync.playerSearch = {GetText=function() return "" end}
+    GVE.Sync.onlineFilter, GVE.Sync.ageFilter = "all", "all"
+    GVE.Sync:BuildPlayerList()
+    GVE.Sync:SetAllCategories(true)
+    GVE.Sync:BuildPlayerList()
+    equal(#GVE.Sync.categoryKeys, 1, "all Cooking ranks share one category")
+    equal(#GVE.Sync.playerList, 3, "one Cooking header and both players")
+    equal(GVE.Sync.playerList[1].count, 2, "Cooking category includes offline master")
+    equal(GVE.Sync.playerList[2].profession.tradeLink, lowLink, "apprentice link unchanged")
+    equal(GVE.Sync.playerList[3].profession.tradeLink, highLink, "master link unchanged")
+end
+
+do
+    -- Live screenshot regression: one guild has English and German clients,
+    -- each sending different trade-link ranks and localized labels.
+    GVE.GetMembers = function()
+        return {{name="CookEn",online=true},{name="CookDe",online=false},
+            {name="JewellerEn",online=false},{name="JewellerDe",online=true}}
+    end
+    local originalLocale, originalSpellInfo = GetLocale, GetSpellInfo
+    local locale = "enUS"
+    GetLocale = function() return locale end
+    GetSpellInfo = function(id)
+        if id == 2550 then return locale == "deDE" and "Kochkunst" or "Cooking" end
+        if id == 25229 then return locale == "deDE" and "Juwelenschleifen" or "Jewelcrafting" end
+    end
+    local links = {
+        cooken="|cffffd000|Htrade:51296:450:450:ABCD:ONE|h[Cooking]|h|r",
+        cookde="|cffffd000|Htrade:2550:5:75:BCDE:TWO|h[Kochkunst]|h|r",
+        jewelleren="|cffffd000|Htrade:51311:450:450:CDEF:THREE|h[Jewelcrafting]|h|r",
+        jewellerde="|cffffd000|Htrade:25229:45:75:DEFA:FOUR|h[Juwelenschleifen]|h|r",
+    }
+    GVE.Sync.guildData.players = {
+        cooken={professions={Cooking={skill=450,maxSkill=450,tradeLink=links.cooken}}},
+        cookde={professions={Kochkunst={skill=5,maxSkill=75,tradeLink=links.cookde}}},
+        jewelleren={professions={Jewelcrafting={skill=450,maxSkill=450,tradeLink=links.jewelleren}}},
+        jewellerde={professions={Juwelenschleifen={skill=45,maxSkill=75,tradeLink=links.jewellerde}}},
+    }
+    GVE.Sync.playerSearch = {GetText=function() return "" end}
+    for _, language in ipairs({"enUS","deDE"}) do
+        locale = language
+        GVE.Sync:BuildPlayerList()
+        GVE.Sync:SetAllCategories(true)
+        GVE.Sync:BuildPlayerList()
+        equal(#GVE.Sync.categoryKeys,2,"two categories for bilingual mixed-rank professions")
+        local counts, names = {}, {}
+        for _, row in ipairs(GVE.Sync.playerList) do
+            if row.header then
+                counts[row.categoryKey]=row.count
+                names[row.categoryKey]=row.category
+            else
+                equal(row.profession.tradeLink,links[row.member.name:lower()],"original localized link unchanged")
+            end
+        end
+        equal(counts["profession:2550"],2,"English and German cooks share category")
+        equal(counts["profession:25229"],2,"English and German jewellers share category")
+        equal(names["profession:2550"],language == "deDE" and "Kochkunst" or "Cooking",
+            "category uses receiving client language")
+    end
+    for _, search in ipairs({"cooking","kochkunst","jewelcrafting","juwelenschleifen"}) do
+        GVE.Sync.playerSearch={GetText=function() return search end}
+        GVE.Sync:BuildPlayerList()
+        equal(#GVE.Sync.playerList,3,"bilingual search returns both players in one category")
+    end
+    GetSpellInfo=nil
+    GVE.Sync.playerSearch={GetText=function() return "Cooking" end}
+    GVE.Sync:BuildPlayerList()
+    equal(GVE.Sync.playerList[1].category,"Kochkunst","localized fallback without spell info")
+    GetLocale,GetSpellInfo=originalLocale,originalSpellInfo
 end
 
 print("Guild View Extended sync snapshot tests passed")

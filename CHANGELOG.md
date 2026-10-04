@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4 - 2026-10-04
+
+- Group all WotLK profession ranks across client languages by their base
+  profession spell, show category names in the receiving client's language,
+  and let English/German searches find all members in the same category.
+- Add background guild position exchange, green world-map/minimap dots with
+  player-name tooltips, zoom/rotation support, and automatic stale-pin removal.
+- Add neon-green, black-outlined guild names and generic G badges on stock
+  plates and supported addon plates where a usable client anchor exists.
+  Preserve actual unit reaction/health data and restore recycled visuals.
+- Follow friendly/enemy visual preferences separately: plates on keeps
+  existing bars; plates off retains guild names + G with invisible engine
+  anchors. Preserve preferences across reload and restore on disable.
+- Integrate stock plate keys using temporary, combat-safe binding overrides;
+  observe settings writes without replacing addon functions or profiles.
+- Add ElvUI-WotLK, TidyPlates and RefinedBlizzPlates adapters plus a fallback
+  for skins retaining recognisable stock frames. Remove the proximity HUD.
+- Document the unresolved non-attackable cross-faction overhead-name case;
+  map dots and hover names remain independent of nameplate anchors and use
+  guild-channel position packets. No client patch is required or bundled.
+- Keep live map positions in memory only and suppress instance coordinates.
+- Preserve profession snapshots across character changes by storing received
+  player data and each alt's own captured professions in separate realm/guild
+  scopes inside the account-wide `GVESyncData` SavedVariable.
+- Migrate existing 1.3 profession caches without deleting them, and restore a
+  guild's previous cache when returning from another guild or a guildless alt.
+
 ## 1.3 - 2026-09-27
 
 - Replaced class atlases with explicit, original 3.3.5a class-motif textures,

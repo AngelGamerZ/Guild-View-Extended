@@ -2,9 +2,12 @@
 ## Title: Guild-View-Extended
 ## Notes: Erweitertes Gildenfenster mit Filter, Suche und synchronisierten Berufslinks | WoW 3.3.5a
 ## Author: Claude
-## Version: 1.3
+## Version: 1.4
 ## SavedVariables: GVEConfig, GVESyncData
 
 Guild-View-Extended.lua
 Guild-View-Extended-Version.lua
 Guild-View-Extended-Sync.lua
+Guild-View-Extended-MapData.lua
+Guild-View-Extended-Map.lua
+Guild-View-Extended-Markers.lua
